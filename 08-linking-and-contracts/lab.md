@@ -23,7 +23,7 @@ Time: A–C ~60 min, D ~15 min, E ~60 min (plus Dedicated provisioning time), F 
 
 - `00-lab-setup`: start clean so IDs match the expected output:
   `docker compose --profile mm2 down -v && docker compose up -d`.
-- Helpers loaded (`a`, `b`, `sra`, `srb`, `LAB`, `DCA_ID`, `DCB_ID`), `jq`, Confluent CLI ≥ v4.82.0.
+- Helpers loaded: `source <repo>/00-lab-setup/lab-env.sh` (`a`, `b`, `sra`, `srb`, `LAB`, `DCA_ID`, `DCB_ID`); `lab_check` passes, `jq`, Confluent CLI ≥ v4.82.0.
 - D/E/F: `00-lab-setup/terraform` applied; for E/F with `-var enable_paid_dedicated=true`.
 
 ```bash

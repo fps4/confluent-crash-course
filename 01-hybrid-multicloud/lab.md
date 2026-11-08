@@ -20,17 +20,40 @@ See with your own eyes what the notes claim:
 | Time | ~90 min for A–C, 30 min for D |
 | Topics | `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` |
 
-# Prerequisites
+# Before you start
 
-> Console consumers started with `--timeout-ms` end with a `TimeoutException` message when no more
-> records arrive. That is normal and not an error in the lab.
+You need the `local` stack from [00-lab-setup](../00-lab-setup/README.md) running; nothing from
+Confluent Cloud until part D2. Do these steps in the terminal you will use for the whole lab:
 
-- `00-lab-setup` running: `docker compose --profile mm2 up -d`, smoke test passed.
-- Helper functions from `00-lab-setup/README.md` loaded (`a`, `b`, `DCA_ID`, `DCB_ID`, `LAB`).
-- `jq`.
+```bash
+# 1. Load the helpers (a, b, LAB, DCA_ID, DCB_ID). Needed in every new terminal.
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh   # adjust to where you cloned
 
-All commands run on the laptop; Kafka tools run inside the containers via `a …` / `b …`. Files go
-to `$LAB/work/` = `/work/` in the containers.
+# 2. Start the stack, including the Connect worker for part C (no-op if already running)
+cd "$LAB" && docker compose --profile mm2 up -d
+
+# 3. Check: four containers running, $LAB/work shared as /work, REST on 8090/8091
+lab_check
+```
+
+`lab_check` should end with `All good.` before you go on. If `lab_check` says `/work` is not shared, your
+Docker daemon is on another machine: see
+[Remote Docker host](../00-lab-setup/README.md#remote-docker-host) and run the lab there.
+
+How the commands in this lab work:
+
+- You type everything in one shell on the machine that runs Docker. `a kafka-topics …` runs
+  `kafka-topics` inside the dc-a container, `b …` inside dc-b. That is why the bootstrap server is
+  always `dc-a:29092` / `dc-b:29092` (the names inside the Docker network), never `localhost`.
+- Config files are written to `$LAB/work/…` on your machine and read as `/work/…` inside the
+  containers.
+- `curl localhost:8090` is dc-a's REST API, `localhost:8091` dc-b's, `localhost:8083` Connect.
+- Console consumers started with `--timeout-ms` end with a `TimeoutException` message when no more
+  records arrive. That is normal.
+- The parts build on each other's cleanup: do A → B → C in order. D is reading (D1) and optional
+  paid work (D2).
+- Start over at any point: `cd "$LAB" && docker compose --profile mm2 down -v && docker compose
+  --profile mm2 up -d` (deletes all topics and links).
 
 ---
 
@@ -602,5 +625,5 @@ KB — minutes of trial credit if you destroy right after. [V]
 - REST action paths `mirrors:truncate-and-restore` / `mirrors:reverse-and-start-mirror` taken from
   the CP REST API reference; behaviour on two single-node clusters not tried.
 - Whether `kafka-mirrors` 8.4 has CLI flags for reverse/truncate.
-- MM2 plugin availability in `cp-kafka-connect:8.4.0`; translated offset value in C3.
+- Translated offset value in C3. (MM2 plugins in `cp-kafka-connect:8.4.0`: present, checked 2026-11-08.)
 - Terraform D2 not planned or applied.

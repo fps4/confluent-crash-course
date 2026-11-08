@@ -1,7 +1,7 @@
 # Confluent crash course — local lab: two single-node KRaft clusters (dc-a, dc-b)
 #
 # Written 2026-11-07 against Confluent Platform 8.4.0 (Apache Kafka 4.4), image tags
-# published on Docker Hub 2026-10-26. UNTESTED: nobody has run `docker compose up` on this file yet.
+# published on Docker Hub 2026-10-26. All five containers started and healthy on 2026-11-08.
 # Read 00-lab-setup/README.md first.
 #
 # What runs:
@@ -169,7 +169,7 @@ services:
   # Optional: Kafka Connect worker for the MirrorMaker 2 comparison (01-hybrid-multicloud lab).
   # MM2 connectors (MirrorSourceConnector, MirrorCheckpointConnector, MirrorHeartbeatConnector)
   # ship with Apache Kafka; the community cp-kafka-connect image should list them under
-  # /connector-plugins. [untested] Runs "near the target": its own topics live on dc-b.
+  # /connector-plugins (checked 2026-11-08). Runs "near the target": its own topics live on dc-b.
   connect:
     image: confluentinc/cp-kafka-connect:8.4.0
     hostname: connect
@@ -199,6 +199,9 @@ services:
       CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
       # Let connectors override producer/consumer client settings (needed for target/source clients).
       CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: "All"
+      # The image default is -Xmx2G; with both brokers running that got the worker OOM-killed in an
+      # 8 GB Docker Desktop VM (2026-11-08). Three MM2 connectors with one task each fit in 768 MB.
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx768m"
     volumes:
       - ./work:/work
 

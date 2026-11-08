@@ -8,3 +8,4 @@
 !*.tfvars.example
 .terraform.lock.hcl
 crash.log
+.env

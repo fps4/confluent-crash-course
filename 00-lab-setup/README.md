@@ -68,20 +68,25 @@ export LAB=~/labs/confluent-crash-course/00-lab-setup
 cd "$LAB"
 
 docker compose up -d                    # dc-a, sr-a, dc-b, sr-b
-docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2
+docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2 (module 01 part C only)
 docker compose ps                       # dc-a and dc-b should be "healthy"
 ```
 
-Helper functions used by every lab (paste into your shell):
+> Docker host on another machine (`DOCKER_HOST=ssh://…` or `docker context use <remote>`)? Read
+> [Remote Docker host](#remote-docker-host) first. The labs assume the containers run on the
+> machine where you type the commands.
+
+**In every new terminal**, load the lab helpers (bash or zsh):
 
 ```bash
-a()   { docker exec -i dc-a "$@"; }    # run a Kafka CLI tool inside dc-a
-b()   { docker exec -i dc-b "$@"; }    # ... inside dc-b
-sra() { docker exec -i sr-a "$@"; }    # Schema Registry tools (kafka-avro-console-*, schema-exporter)
-srb() { docker exec -i sr-b "$@"; }
-DCA_ID=Q0PvpgzYSwirapvmRY0NFg          # fixed CLUSTER_IDs from docker-compose.yml
-DCB_ID=UmwHWmvUR6KH9yIQ3xbmhg
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh
+lab_check                               # containers up, /work shared, REST ports reachable
 ```
+
+[`lab-env.sh`](lab-env.sh) sets `LAB` (this folder), `DCA_ID` / `DCB_ID` (the fixed cluster IDs
+from `docker-compose.yml`) and four functions that run a tool inside a container: `a` (dc-a), `b`
+(dc-b), `sra` (sr-a), `srb` (sr-b). So `a kafka-topics --list …` = `docker exec -i dc-a kafka-topics
+--list …`. Put the `source` line in `~/.zshrc` if you do not want to repeat it.
 
 Files you write to `$LAB/work/` appear inside every container at `/work/` (git-ignored, because
 link configs may hold API secrets).
@@ -108,6 +113,47 @@ docker compose --profile mm2 down -v      # delete everything
 
 Ports: dc-a `9092` (Kafka), `8090` (REST v3), sr-a `8081`; dc-b `9093`, `8091`, sr-b `8082`;
 Connect `8083`. Inside the Docker network: `dc-a:29092`, `dc-b:29092`, `sr-a:8081`, `sr-b:8081`.
+
+Memory: dc-a and dc-b take about 1.2 GB each, the registries 0.3 GB each, Connect about 1.1 GB.
+Other containers on the same Docker host count too. If a container shows `Exited (137)`, check
+`docker inspect <name> --format '{{.State.OOMKilled}}'` and give Docker more memory or stop other
+stacks.
+
+## Remote Docker host
+
+If your Docker daemon runs on another machine (a home server, a VM), **run the labs on that
+machine**, not on the laptop:
+
+```bash
+ssh <docker-host>
+mkdir -p ~/labs && cd ~/labs
+git clone https://github.com/fps4/confluent-crash-course.git
+cd confluent-crash-course/00-lab-setup
+docker compose up -d
+source ./lab-env.sh && lab_check
+```
+
+The host needs `docker compose`, `jq` and `curl`. The Terraform and Confluent CLI parts
+(`cc-basic`, `paid-session`) only talk to Confluent Cloud, so they can stay on the laptop.
+
+Why not drive a remote daemon from the laptop: two things break silently.
+
+- The `./work:/work` bind mount resolves on the **Docker host**. Docker creates an empty
+  `/Users/<you>/…/work` directory there, so the config files you write to `$LAB/work/` on the laptop
+  never reach `/work/` in the containers. `lab_check` reports this.
+- The labs call `localhost:8090`, `:8091`, `:8081`, `:8082`, `:8083`. Those ports are published on
+  the Docker host, not on the laptop. (You could add `ssh -L` tunnels for all five and sync `work/`
+  with rsync, but that is more moving parts than the lab is worth.)
+
+Do not run the stack on two daemons at once. `lab_check` prints which Docker context it is
+talking to; `docker context show` does the same.
+
+## Next
+
+The local stack is all module 01 needs for parts A–C, and all module 08 needs for its local part.
+The suggested order in the [course README](../README.md#modules--suggested-order) starts with
+[08](../08-linking-and-contracts/lab.md), then [01](../01-hybrid-multicloud/lab.md). Set up
+`cc-basic` (below) when a lab first asks for it.
 
 # `cc-basic` — create with Terraform
 
@@ -213,9 +259,11 @@ lunch, all covered by trial credit. Read the console's estimate before you press
 
 # Status and untested items in this folder
 
-- `docker-compose.yml`: passes `docker compose config`. **dc-a and sr-a tested** (started and
-  healthy on 2026-11-08). `dc-b`, `sr-b` and the MM2 Connect worker have not been run yet.
+- `docker-compose.yml`: passes `docker compose config`. **All five containers started on
+  2026-11-08** (Docker Desktop, 8 GB VM). Connect was OOM-killed with the image's default 2 GB heap;
+  now capped at 768 MB, and `/connector-plugins` lists the three MM2 connectors.
+- `lab-env.sh` + `lab_check` tested in bash and zsh, against the local stack and against a remote
+  Docker context (where it correctly reports the missing `/work` share).
 - Embedded REST on port 8090 enabled by default on cp-server 8.4.0. [V]
 - `SCHEMA_REGISTRY_CONFLUENT_LICENSE_REPLICATION_FACTOR` needed for licensed SR features on a single broker. [V]
-- MM2 connector classes present in `cp-kafka-connect:8.4.0`. [V]
 - Terraform: passes `terraform validate`; not planned or applied against a live account. Enterprise `availability = "LOW"`. [V]
