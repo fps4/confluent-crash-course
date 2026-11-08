@@ -290,7 +290,7 @@ flowchart LR
 | No word on Azure key versions | **Versionless Key Vault URIs** can break after rotation → `encrypt.azure.key.version.save` + rewrap | CC manage-keys; client source |
 | No word on RBAC for keys | RBAC on **KEK** resources (CC and CP `dek.registry.rbac.enable`); Schema Linking exporters need KEK roles | CC/CP docs |
 | No word on Tableflow | Tableflow keeps ciphertext (non-shared) or decrypts (shared) | CC overview |
-| Demo uses CP 7.x console tools with `--broker-list` | Kafka 4.x / CP 8.x tools use `--bootstrap-server`; newer tools deprecate `--property` for `--reader-property`/`--formatter-property` **[V]** | Kafka docs |
+| Demo uses CP 7.x console tools with `--broker-list` | Kafka 4.x / CP 8.x tools use `--bootstrap-server`; Kafka 4.2+ (CP 8.4) deprecates `--property` for `--reader-property` (producer) / `--formatter-property` (consumer); checked 2026-11-08 | Kafka docs |
 
 ---
 

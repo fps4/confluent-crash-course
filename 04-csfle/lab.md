@@ -204,15 +204,15 @@ Producer (run where the CP 8.x tools are; copy the `/tmp` files into the contain
 ```bash
 kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.customer-journey.v1 \
   --producer.config /tmp/producer.properties \
-  --property schema.registry.url=$SR_URL \
-  --property basic.auth.credentials.source=USER_INFO \
-  --property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$P.json):$(jq -r .api_secret /tmp/sr-$P.json) \
-  --property value.schema.id=$SCHEMA_ID \
-  --property auto.register.schemas=false \
-  --property use.latest.version=true \
-  --property rule.executors._default_.param.tenant.id=$TENANT \
-  --property rule.executors._default_.param.client.id=$(jq -r .appId /tmp/sp-producer.json) \
-  --property rule.executors._default_.param.client.secret=$(jq -r .password /tmp/sp-producer.json)
+  --reader-property schema.registry.url=$SR_URL \
+  --reader-property basic.auth.credentials.source=USER_INFO \
+  --reader-property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$P.json):$(jq -r .api_secret /tmp/sr-$P.json) \
+  --reader-property value.schema.id=$SCHEMA_ID \
+  --reader-property auto.register.schemas=false \
+  --reader-property use.latest.version=true \
+  --reader-property rule.executors._default_.param.tenant.id=$TENANT \
+  --reader-property rule.executors._default_.param.client.id=$(jq -r .appId /tmp/sp-producer.json) \
+  --reader-property rule.executors._default_.param.client.secret=$(jq -r .password /tmp/sp-producer.json)
 ```
 
 Paste, one per line:
@@ -232,12 +232,12 @@ Common part:
 consume() { # $1=props $2=sa $3=sp json $4=group
 kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.customer-journey.v1 \
   --consumer.config $1 --group $4 --from-beginning --max-messages 2 \
-  --property schema.registry.url=$SR_URL \
-  --property basic.auth.credentials.source=USER_INFO \
-  --property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$2.json):$(jq -r .api_secret /tmp/sr-$2.json) \
-  --property rule.executors._default_.param.tenant.id=$TENANT \
-  --property rule.executors._default_.param.client.id=$(jq -r .appId $3) \
-  --property rule.executors._default_.param.client.secret=$(jq -r .password $3)
+  --formatter-property schema.registry.url=$SR_URL \
+  --formatter-property basic.auth.credentials.source=USER_INFO \
+  --formatter-property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$2.json):$(jq -r .api_secret /tmp/sr-$2.json) \
+  --formatter-property rule.executors._default_.param.tenant.id=$TENANT \
+  --formatter-property rule.executors._default_.param.client.id=$(jq -r .appId $3) \
+  --formatter-property rule.executors._default_.param.client.secret=$(jq -r .password $3)
 }
 ```
 

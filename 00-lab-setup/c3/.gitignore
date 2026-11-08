@@ -1,0 +1,8 @@
+# Seed config for Control Center 2.x, Prometheus and Alertmanager, from confluentinc/cp-all-in-one
+# 8.4.0-post (cp-all-in-one/vol/config). The two web-config files are empty on purpose: they
+# only have to exist. Control Center rewrites trigger_rules-/alertmanager-generated.yml when you
+# define alerts in the UI; anything else it writes here is ignored.
+*
+!.gitignore
+!*-generated.yml
+!web-config-*.yml

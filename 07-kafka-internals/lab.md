@@ -157,9 +157,9 @@ docker stop internals-b2-1
 sleep 15
 $K kafka-topics --bootstrap-server b1:29092 --describe --under-min-isr-partitions
 echo 'SO-1001234:READY' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic orders.order-status.updated.v1 --property parse.key=true --property key.separator=: \
-  --producer-property acks=all --producer-property delivery.timeout.ms=15000 \
-  --producer-property request.timeout.ms=10000
+  --topic orders.order-status.updated.v1 --reader-property parse.key=true --reader-property key.separator=: \
+  --command-property acks=all --command-property delivery.timeout.ms=15000 \
+  --command-property request.timeout.ms=10000
 ```
 
 Expected: all partitions under min ISR. The `acks=all` produce fails after the timeout with
@@ -167,10 +167,10 @@ Expected: all partitions under min ISR. The `acks=all` produce fails after the t
 
 ```bash
 echo 'SO-1005678:DISPATCHED' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic orders.order-status.updated.v1 --property parse.key=true --property key.separator=: \
-  --producer-property acks=1
+  --topic orders.order-status.updated.v1 --reader-property parse.key=true --reader-property key.separator=: \
+  --command-property acks=1
 $K kafka-console-consumer --bootstrap-server b1:29092 --topic orders.order-status.updated.v1 \
-  --from-beginning --property print.key=true --timeout-ms 10000 | grep -c . ; \
+  --from-beginning --formatter-property print.key=true --timeout-ms 10000 | grep -c . ; \
 $K kafka-get-offsets --bootstrap-server b1:29092 --topic orders.order-status.updated.v1
 ```
 
@@ -187,7 +187,7 @@ docker start internals-b2-1 internals-b3-1
 sleep 20
 $K kafka-topics --bootstrap-server $BS --describe --topic orders.order-status.updated.v1
 $K kafka-console-consumer --bootstrap-server $BS --topic orders.order-status.updated.v1 \
-  --from-beginning --property print.key=true --timeout-ms 10000 | grep SO-1005678
+  --from-beginning --formatter-property print.key=true --timeout-ms 10000 | grep SO-1005678
 ```
 
 Expected: ISR back to 3 for all partitions (expand), leadership may stay on b1 until preferred
@@ -260,7 +260,7 @@ $K kafka-topics --bootstrap-server $BS --create --topic orders.order-status.late
   --config min.compaction.lag.ms=0
 
 cat <<'EOF' | $K kafka-console-producer --bootstrap-server $BS --topic orders.order-status.latest.v1 \
-  --property parse.key=true --property key.separator=: --property null.marker=NULL
+  --reader-property parse.key=true --reader-property key.separator=: --reader-property null.marker=NULL
 SO-1001001:CREATED
 SO-1001002:CREATED
 SO-1001001:READY
@@ -276,7 +276,7 @@ Kafka 3.2]. Read immediately:
 
 ```bash
 $K kafka-console-consumer --bootstrap-server $BS --topic orders.order-status.latest.v1 \
-  --from-beginning --property print.key=true --property print.offset=true --timeout-ms 5000
+  --from-beginning --formatter-property print.key=true --formatter-property print.offset=true --timeout-ms 5000
 ```
 
 Expected: all 7 records — they are in the **active segment**, which is never compacted.
@@ -299,13 +299,13 @@ $K kafka-topics --bootstrap-server $BS --create --topic sites.queue-length.measu
 # producer in the background: one record per second
 docker exec -d internals-b1-1 bash -c 'for i in $(seq 1 100000); do echo "Q-$((i%6)):q=$((RANDOM%80))"; sleep 1; done \
   | kafka-console-producer --bootstrap-server b1:29092 --topic sites.queue-length.measured.v1 \
-    --property parse.key=true --property key.separator=:'
+    --reader-property parse.key=true --reader-property key.separator=:'
 
 # two consumers with the new protocol
 for n in 1 2; do
   docker exec -d internals-b1-1 kafka-console-consumer --bootstrap-server b1:29092 \
     --topic sites.queue-length.measured.v1 --group analytics-kip848 \
-    --consumer-property group.protocol=consumer --consumer-property client.id=c$n
+    --command-property group.protocol=consumer --command-property client.id=c$n
 done
 sleep 10
 $K kafka-consumer-groups --bootstrap-server $BS --describe --group analytics-kip848 --members --verbose
@@ -324,7 +324,7 @@ Compare with a classic group: start two consumers in `analytics-classic` **witho
 $K kafka-groups --bootstrap-server $BS --list     # Kafka 4.0+ tool, shows TYPE/PROTOCOL [V]
 ```
 
-Negative test: add `--consumer-property partition.assignment.strategy=org.apache.kafka.clients.consumer.RoundRobinAssignor`
+Negative test: add `--command-property partition.assignment.strategy=org.apache.kafka.clients.consumer.RoundRobinAssignor`
 to a `group.protocol=consumer` consumer. Expected: the client refuses the config (not supported
 with the new protocol).
 

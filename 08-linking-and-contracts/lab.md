@@ -23,7 +23,7 @@ Time: A–C ~60 min, D ~15 min, E ~60 min (plus Dedicated provisioning time), F 
 
 - `00-lab-setup`: start clean so IDs match the expected output:
   `docker compose --profile mm2 down -v && docker compose up -d`.
-- Helpers loaded (`a`, `b`, `sra`, `srb`, `LAB`, `DCA_ID`, `DCB_ID`), `jq`, Confluent CLI ≥ v4.82.0.
+- Helpers loaded: `source <repo>/00-lab-setup/lab-env.sh` (`a`, `b`, `sra`, `srb`, `LAB`, `DCA_ID`, `DCB_ID`); `lab_check` passes, `jq`, Confluent CLI ≥ v4.82.0.
 - D/E/F: `00-lab-setup/terraform` applied; for E/F with `-var enable_paid_dedicated=true`.
 
 ```bash
@@ -108,14 +108,14 @@ serializer so the DLQ record keeps its key.
 ```bash
 produce() {  # reads key|json lines from stdin
   sra kafka-avro-console-producer --bootstrap-server dc-a:29092 --topic $T \
-    --property schema.registry.url=http://sr-a:8081 \
-    --property value.schema.id=$ID \
-    --property auto.register.schemas=false \
-    --property use.latest.version=true \
-    --property parse.key=true --property 'key.separator=|' \
-    --property key.serializer=io.confluent.kafka.serializers.WrapperKeySerializer \
-    --property wrapped.key.serializer=org.apache.kafka.common.serialization.StringSerializer \
-    --property bootstrap.servers=dc-a:29092
+    --reader-property schema.registry.url=http://sr-a:8081 \
+    --reader-property value.schema.id=$ID \
+    --reader-property auto.register.schemas=false \
+    --reader-property use.latest.version=true \
+    --reader-property parse.key=true --reader-property 'key.separator=|' \
+    --reader-property key.serializer=io.confluent.kafka.serializers.WrapperKeySerializer \
+    --reader-property wrapped.key.serializer=org.apache.kafka.common.serialization.StringSerializer \
+    --reader-property bootstrap.servers=dc-a:29092
 }
 
 echo 'SO-1001601|{"orderId":"SO-1001601","status":"READY","scheduledTime":1762500000000,"eventTime":1762499000000}' | produce
@@ -131,9 +131,9 @@ Expected:
 
 ```bash
 sra kafka-avro-console-consumer --bootstrap-server dc-a:29092 --topic $T --from-beginning \
-  --property schema.registry.url=http://sr-a:8081 --timeout-ms 10000            # only SO-1001601
+  --formatter-property schema.registry.url=http://sr-a:8081 --timeout-ms 10000            # only SO-1001601
 a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T.dlq --from-beginning \
-  --property print.key=true --property print.headers=true --timeout-ms 10000   # BAD1 + headers
+  --formatter-property print.key=true --formatter-property print.headers=true --timeout-ms 10000   # BAD1 + headers
 ```
 
 What the DLQ record looks like (headers with rule name/mode/error, value encoding) is not
@@ -141,8 +141,8 @@ documented in detail — note what you see. [V] If the key-wrapper properties ar
 console producer, drop the two `key.serializer` lines and rerun; the DLQ record then has no key.
 
 Fallback if `value.schema.id` + `use.latest.version` does not pick up the rules: the documented
-console-producer pattern passes the schema and the rules inline (`--property value.schema=…
---property value.rule.set=…`, auto-registers). Use it only to see the rule fire; it bypasses the
+console-producer pattern passes the schema and the rules inline (`--reader-property value.schema=…
+--reader-property value.rule.set=…`, auto-registers). Use it only to see the rule fire; it bypasses the
 "producers don't register" principle.
 
 ## A4. Optional — breaking change on the same topic (compatibility group + JSONata)
@@ -170,8 +170,8 @@ curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
 
 # A consumer pinned to major version 1 reads everything as v1 (v2 records are DOWNGRADEd)
 sra kafka-avro-console-consumer --bootstrap-server dc-a:29092 --topic $T --from-beginning \
-  --property schema.registry.url=http://sr-a:8081 \
-  --property use.latest.with.metadata=major_version=1 --timeout-ms 10000
+  --formatter-property schema.registry.url=http://sr-a:8081 \
+  --formatter-property use.latest.with.metadata=major_version=1 --timeout-ms 10000
 ```
 
 To see the migration, produce one v2 record (`value.schema.id=2`, field `orderStatus`) and
@@ -198,14 +198,14 @@ Expected: `confluent.value.schema.validation=true`; value subject strategy shows
 ```bash
 # 1. plain text, no schema id -> rejected
 echo 'SO-1001603|{"orderId":"SO-1001603","status":"DELAYED"}' | a kafka-console-producer \
-  --bootstrap-server dc-a:29092 --topic $T --property parse.key=true --property 'key.separator=|'
+  --bootstrap-server dc-a:29092 --topic $T --reader-property parse.key=true --reader-property 'key.separator=|'
 
 # 2. Avro with a registered schema id -> accepted
 echo 'SO-1001604|{"orderId":"SO-1001604","status":"DELAYED","scheduledTime":1762500000000,"eventTime":1762499500000}' | produce
 
 # 3. tombstone (null value) -> accepted, even without a schema id
 echo 'SO-1001604|NULL' | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T \
-  --property parse.key=true --property 'key.separator=|' --property null.marker=NULL
+  --reader-property parse.key=true --reader-property 'key.separator=|' --reader-property null.marker=NULL
 ```
 
 Expected: (1) error containing "This record has failed the validation on broker" — the batch is
@@ -242,7 +242,7 @@ b kafka-mirrors --create --mirror-topic $T --link sl-link --bootstrap-server dc-
 
 ```bash
 srb kafka-avro-console-consumer --bootstrap-server dc-b:29092 --topic $T --from-beginning \
-  --property schema.registry.url=http://sr-b:8081 --timeout-ms 10000
+  --formatter-property schema.registry.url=http://sr-b:8081 --timeout-ms 10000
 ```
 
 Expected: failure or garbage. The bytes say "schema 1"; `sr-b`'s schema 1 is `Unrelated`. This is
@@ -285,7 +285,7 @@ Expected: refused (subject/context in IMPORT mode). One write master per subject
 
 ```bash
 srb kafka-avro-console-consumer --bootstrap-server dc-b:29092 --topic $T --from-beginning \
-  --property schema.registry.url=http://sr-b:8081/contexts/.dc-a --timeout-ms 10000
+  --formatter-property schema.registry.url=http://sr-b:8081/contexts/.dc-a --timeout-ms 10000
 ```
 
 Expected: the records decode correctly. The only change is the base path in the URL — this is
@@ -411,8 +411,8 @@ sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule require
 EOF
 sra kafka-avro-console-consumer --bootstrap-server $CC_BOOT --consumer.config /work/cc-client.properties \
   --topic $T --from-beginning --timeout-ms 20000 \
-  --property schema.registry.url=$SR_URL/contexts/.onprem \
-  --property basic.auth.credentials.source=USER_INFO --property basic.auth.user.info=$SR_KEY:$SR_SECRET
+  --formatter-property schema.registry.url=$SR_URL/contexts/.onprem \
+  --formatter-property basic.auth.credentials.source=USER_INFO --formatter-property basic.auth.user.info=$SR_KEY:$SR_SECRET
 ```
 
 Expected: records decode. Then open the topic in the Cloud Console message viewer: per the docs,
@@ -689,7 +689,7 @@ bytes — destroy the same day; check the Billing page. [V]
 # Untested / check on first run
 
 - Rule execution in `kafka-avro-console-producer` with `value.schema.id` + `use.latest.version`;
-  `WrapperKeySerializer` via `--property`; `dlq.auto.flush`; DLQ record format and headers.
+  `WrapperKeySerializer` via `--reader-property`; `dlq.auto.flush`; DLQ record format and headers.
 - `use.latest.with.metadata` in the console consumer (A4).
 - Default subject strategy shown on CP 8.4 topics (B).
 - Behaviour of `sr-b` ID lookup in C3 (does it fall back to other contexts?).

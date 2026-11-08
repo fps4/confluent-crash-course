@@ -20,17 +20,40 @@ See with your own eyes what the notes claim:
 | Time | ~90 min for A–C, 30 min for D |
 | Topics | `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` |
 
-# Prerequisites
+# Before you start
 
-> Console consumers started with `--timeout-ms` end with a `TimeoutException` message when no more
-> records arrive. That is normal and not an error in the lab.
+You need the `local` stack from [00-lab-setup](../00-lab-setup/README.md) running; nothing from
+Confluent Cloud until part D2. Do these steps in the terminal you will use for the whole lab:
 
-- `00-lab-setup` running: `docker compose --profile mm2 up -d`, smoke test passed.
-- Helper functions from `00-lab-setup/README.md` loaded (`a`, `b`, `DCA_ID`, `DCB_ID`, `LAB`).
-- `jq`.
+```bash
+# 1. Load the helpers (a, b, LAB, DCA_ID, DCB_ID). Needed in every new terminal.
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh   # adjust to where you cloned
 
-All commands run on the laptop; Kafka tools run inside the containers via `a …` / `b …`. Files go
-to `$LAB/work/` = `/work/` in the containers.
+# 2. Start the stack, including the Connect worker for part C (no-op if already running)
+cd "$LAB" && docker compose --profile mm2 up -d
+
+# 3. Check: four containers running, $LAB/work shared as /work, REST on 8090/8091
+lab_check
+```
+
+`lab_check` should end with `All good.` before you go on. If `lab_check` says `/work` is not shared, your
+Docker daemon is on another machine: see
+[Remote Docker host](../00-lab-setup/README.md#remote-docker-host) and run the lab there.
+
+How the commands in this lab work:
+
+- You type everything in one shell on the machine that runs Docker. `a kafka-topics …` runs
+  `kafka-topics` inside the dc-a container, `b …` inside dc-b. That is why the bootstrap server is
+  always `dc-a:29092` / `dc-b:29092` (the names inside the Docker network), never `localhost`.
+- Config files are written to `$LAB/work/…` on your machine and read as `/work/…` inside the
+  containers.
+- `curl localhost:8090` is dc-a's REST API, `localhost:8091` dc-b's, `localhost:8083` Connect.
+- Console consumers started with `--timeout-ms` end with a `TimeoutException` message when no more
+  records arrive. That is normal.
+- The parts build on each other's cleanup: do A → B → C in order. D is reading (D1) and optional
+  paid work (D2).
+- Start over at any point: `cd "$LAB" && docker compose --profile mm2 down -v && docker compose
+  --profile mm2 up -d` (deletes all topics and links).
 
 ---
 
@@ -45,7 +68,7 @@ a kafka-topics --bootstrap-server dc-a:29092 --create --topic $T --partitions 3 
 # 60 keyed records (key = order ID, so one order stays in one partition)
 for i in $(seq 1 60); do o="SO-$((1001600 + i % 7))"; echo "$o|{\"orderId\":\"$o\",\"status\":\"READY\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T \
-     --property parse.key=true --property key.separator='|'
+     --reader-property parse.key=true --reader-property key.separator='|'
 
 # group ops-dashboard reads everything and commits 60
 a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group ops-dashboard \
@@ -54,7 +77,7 @@ a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group ops-da
 # 40 more records the group has NOT read yet
 for i in $(seq 61 100); do o="SO-$((1001600 + i % 7))"; echo "$o|{\"orderId\":\"$o\",\"status\":\"DISPATCHED\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T \
-     --property parse.key=true --property key.separator='|'
+     --reader-property parse.key=true --reader-property key.separator='|'
 
 a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group ops-dashboard
 ```
@@ -68,19 +91,27 @@ cat > $LAB/work/dr-link.properties <<'EOF'
 bootstrap.servers=dc-a:29092
 consumer.offset.sync.enable=true
 consumer.offset.sync.ms=5000
-consumer.offset.group.filters={"groupFilters":[{"name":"ops-dashboard","patternType":"LITERAL","filterType":"INCLUDE"}]}
+EOF
+cat > $LAB/work/dr-link-groups.json <<'EOF'
+{"groupFilters":[{"name":"ops-dashboard","patternType":"LITERAL","filterType":"INCLUDE"}]}
 EOF
 
 b kafka-cluster-links --bootstrap-server dc-b:29092 --create --link dr-link \
-  --config-file /work/dr-link.properties
+  --config-file /work/dr-link.properties \
+  --consumer-group-filters-json-file /work/dr-link-groups.json
 b kafka-cluster-links --bootstrap-server dc-b:29092 --list
 b kafka-configs --bootstrap-server dc-b:29092 --describe --cluster-link dr-link
 ```
 
 Expected: `Cluster link 'dr-link' creation successfully completed.`; `--list` shows link name, link
-ID, remote cluster ID `Q0PvpgzYSwirapvmRY0NFg`; `--describe` shows the configs above
-(`sensitive=false synonyms={...}`). The offset sync interval is 5 s here only to make the lab
-fast; the default is 30 s.
+ID, remote cluster ID `Q0PvpgzYSwirapvmRY0NFg`; `--describe` shows the configs above, with the
+group filter as `consumer.offset.group.filters=…` (`sensitive=false synonyms={...}`). The offset
+sync interval is 5 s here only to make the lab fast; the default is 30 s.
+
+> With `consumer.offset.sync.enable=true`, `kafka-cluster-links --create` (CP 8.4) refuses a
+> `consumer.offset.group.filters` line in `--config-file` and asks for
+> `--consumer-group-filters-json-file` instead. `kafka-configs --alter --cluster-link` later accepts
+> the filter as a normal config line (used in B5). Tested 2026-11-08.
 
 ## A3. Mirror topic, same offsets
 
@@ -97,7 +128,7 @@ a kafka-get-offsets --bootstrap-server dc-a:29092 --topic $T
 b kafka-get-offsets --bootstrap-server dc-b:29092 --topic $T
 # the same record, by partition + offset, on both sides
 for h in a b; do $h kafka-console-consumer --bootstrap-server dc-$h:29092 --topic $T \
-   --partition 0 --offset 5 --max-messages 1 --property print.offset=true --property print.key=true; done
+   --partition 0 --offset 5 --max-messages 1 --formatter-property print.offset=true --formatter-property print.key=true; done
 ```
 
 Expected: identical end offsets per partition; the record at partition 0 offset 5 is the same
@@ -115,11 +146,18 @@ Expected: same CURRENT-OFFSET per partition as on dc-a (sum 60), no active membe
 
 ```bash
 echo 'SO-1001601|{"seq":999}' | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T \
-  --property parse.key=true --property key.separator='|'
+  --reader-property parse.key=true --reader-property key.separator='|'
 ```
 
-Expected: the produce fails with an error that the topic is a read-only mirror topic (exact
-text differs by version). [V]
+Expected: the produce fails. On CP 8.4.0:
+
+```
+ERROR Error when sending message to topic orders.order-status.updated.v1 with key: 10 bytes, value: 11 bytes ...
+org.apache.kafka.common.errors.InvalidRequestException: Cannot append records to read-only mirror topic 'orders.order-status.updated.v1'
+```
+
+This is the point of the step: a mirror topic only accepts records from the link. It becomes
+writable only after failover or promote (A5).
 
 ## A5. Disaster: lose dc-a, fail over
 
@@ -136,7 +174,7 @@ Now dc-b is primary for this topic. The group continues:
 
 ```bash
 b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group ops-dashboard \
-  --timeout-ms 10000 --property print.offset=true | wc -l
+  --timeout-ms 10000 --formatter-property print.offset=true | wc -l
 ```
 
 Expected: **40** lines (seq 61–100). If the group had committed after the last sync, you would see
@@ -146,7 +184,7 @@ Produce works now:
 
 ```bash
 echo 'SO-1001601|{"orderId":"SO-1001601","status":"DELAYED","seq":101}' | b kafka-console-producer \
-  --bootstrap-server dc-b:29092 --topic $T --property parse.key=true --property key.separator='|'
+  --bootstrap-server dc-b:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 ```
 
 ## A6. Why this link cannot fail back
@@ -180,14 +218,17 @@ link.mode=BIDIRECTIONAL
 bootstrap.servers=dc-a:29092
 consumer.offset.sync.enable=true
 consumer.offset.sync.ms=5000
-consumer.offset.group.filters={"groupFilters":[{"name":"item-sorter","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
+EOF
+cat > $LAB/work/bidi-groups.json <<'EOF'
+{"groupFilters":[{"name":"item-sorter","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
 EOF
 cat > $LAB/work/bidi-on-a.properties <<'EOF'
 link.mode=BIDIRECTIONAL
 bootstrap.servers=dc-b:29092
 EOF
 
-b kafka-cluster-links --bootstrap-server dc-b:29092 --create --link bidi-link --config-file /work/bidi-on-b.properties
+b kafka-cluster-links --bootstrap-server dc-b:29092 --create --link bidi-link --config-file /work/bidi-on-b.properties \
+  --consumer-group-filters-json-file /work/bidi-groups.json
 a kafka-cluster-links --bootstrap-server dc-a:29092 --create --link bidi-link --config-file /work/bidi-on-a.properties
 b kafka-mirrors --create --mirror-topic $T --link bidi-link --bootstrap-server dc-b:29092
 ```
@@ -199,7 +240,7 @@ mirrored *on dc-b*, nothing flows back.
 
 ```bash
 for i in $(seq 1 50); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"scanner\":\"S12\",\"seq\":$i}"; done \
- | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --property parse.key=true --property key.separator='|'
+ | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group item-sorter --from-beginning --timeout-ms 10000 > /dev/null
 sleep 10
 b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group item-sorter   # sum 50
@@ -213,14 +254,14 @@ of the outage):
 ```bash
 b kafka-mirrors --pause --topics $T --bootstrap-server dc-b:29092
 for i in $(seq 51 55); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"note\":\"DIVERGENT\",\"seq\":$i}"; done \
- | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --property parse.key=true --property key.separator='|'
+ | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 a kafka-get-offsets --bootstrap-server dc-a:29092 --topic $T     # sum 55
 b kafka-get-offsets --bootstrap-server dc-b:29092 --topic $T     # sum 50
 
 docker stop dc-a
 b kafka-mirrors --failover --topics $T --bootstrap-server dc-b:29092
 for i in $(seq 101 110); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"note\":\"WRITTEN-IN-DR\",\"seq\":$i}"; done \
- | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T --property parse.key=true --property key.separator='|'
+ | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group item-sorter --timeout-ms 10000 | wc -l   # 10
 ```
 
@@ -364,7 +405,7 @@ a kafka-topics --bootstrap-server dc-a:29092 --list | grep offset-syncs
 a kafka-get-offsets --bootstrap-server dc-a:29092 --topic $T
 b kafka-get-offsets --bootstrap-server dc-b:29092 --topic dc-a.$T
 b kafka-console-consumer --bootstrap-server dc-b:29092 --topic dc-a.$T --partition 0 --offset 0 \
-  --max-messages 1 --property print.offset=true
+  --max-messages 1 --formatter-property print.offset=true
 b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group sites-ui
 ```
 
@@ -598,9 +639,9 @@ KB — minutes of trial credit if you destroy right after. [V]
 
 # Untested / check on first run
 
-- Read-only produce error text (A4); time until `SOURCE_UNAVAILABLE` shows (A5).
+- Time until `SOURCE_UNAVAILABLE` shows (A5). (A4 error text confirmed on 8.4.0, 2026-11-08.)
 - REST action paths `mirrors:truncate-and-restore` / `mirrors:reverse-and-start-mirror` taken from
   the CP REST API reference; behaviour on two single-node clusters not tried.
 - Whether `kafka-mirrors` 8.4 has CLI flags for reverse/truncate.
-- MM2 plugin availability in `cp-kafka-connect:8.4.0`; translated offset value in C3.
+- Translated offset value in C3. (MM2 plugins in `cp-kafka-connect:8.4.0`: present, checked 2026-11-08.)
 - Terraform D2 not planned or applied.
