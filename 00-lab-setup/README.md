@@ -119,6 +119,33 @@ Other containers on the same Docker host count too. If a container shows `Exited
 `docker inspect <name> --format '{{.State.OOMKilled}}'` and give Docker more memory or stop other
 stacks.
 
+## Optional: Control Center (profile `c3`)
+
+A web UI for both clusters: topics, consumer groups and lag, cluster links and mirror topics.
+Useful for watching module 01's failover. No lab depends on it; every "Expected" is CLI output.
+
+```bash
+cd "$LAB" && docker compose --profile mm2 --profile c3 up -d
+open http://localhost:9021
+
+# once per fresh stack: Control Center calls its home cluster "controlcenter.cluster"; name it dc-b
+curl -s -X PATCH -H 'Content-Type: application/merge-patch+json' \
+  localhost:9021/2.0/clusters/kafka/$DCB_ID -d '{"displayName":"dc-b"}'
+```
+
+- Control Center **2.7.0** (the 2.x line that cp-all-in-one pairs with CP 8.4) plus its own
+  Prometheus and Alertmanager. The classic Control Center image stops at 7.9.
+- The brokers always carry the telemetry settings that feed it (the `x-c3-telemetry` block in
+  `docker-compose.yml`). Without the `c3` profile running they log `ERROR Confluent Telemetry
+  Metrics Failure` with a stack trace about once a minute. Harmless; ignore it.
+- Charts fill in slowly: brokers push metrics once a minute.
+- Memory: about 0.9 GB for the three containers (measured 2026-11-08: Control Center 720 MB,
+  Prometheus 165 MB, Alertmanager 12 MB).
+- Config seeds live in `c3/` (from cp-all-in-one). Prometheus and Alertmanager exit at start if
+  any of them is missing, including the two empty `web-config-*.yml`.
+- Control Center's home cluster is **dc-b**, because the labs stop dc-a for failover.
+- Stop just Control Center: `docker compose --profile c3 stop control-center prometheus alertmanager`.
+
 ## Remote Docker host
 
 If your Docker daemon runs on another machine (a home server, a VM), **run the labs on that
