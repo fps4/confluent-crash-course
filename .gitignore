@@ -1,0 +1,10 @@
+.DS_Store
+# lab working files are ignored by 00-lab-setup/work/.gitignore (link configs may hold API secrets)
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+crash.log

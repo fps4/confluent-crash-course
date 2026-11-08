@@ -1,0 +1,207 @@
+# Confluent crash course — local lab: two single-node KRaft clusters (dc-a, dc-b)
+#
+# Written 2026-11-07 against Confluent Platform 8.4.0 (Apache Kafka 4.4), image tags
+# published on Docker Hub 2026-10-26. UNTESTED: nobody has run `docker compose up` on this file yet.
+# Read 00-lab-setup/README.md first.
+#
+# What runs:
+#   dc-a  Confluent Server 8.4.0, KRaft combined mode (broker+controller), "data centre A"
+#   sr-a  Schema Registry 8.4.0 for dc-a (exporter + data-contract rule extensions on)
+#   dc-b  Confluent Server 8.4.0, KRaft combined mode, "data centre B"
+#   sr-b  Schema Registry 8.4.0 for dc-b
+#   connect  (profile "mm2" only) Kafka Connect worker on dc-b, for the MirrorMaker 2 comparison
+#
+# Licence: no KAFKA_CONFLUENT_LICENSE is set. Confluent's licence page says single-broker
+# clusters run under the free *developer licence* (no expiry, non-production, multiple
+# single-broker clusters share it). The Docker config page says "without the license key,
+# Confluent Server can be used for a 30-day trial period". Both clusters here are single-broker.
+# Adding a second broker to a cluster switches it to the 30-day trial and you cannot go back. [V]
+#
+# KRaft combined mode is for local experiments only; Confluent does not support it in production.
+#
+# Host ports:
+#   dc-a  Kafka localhost:9092   embedded REST v3 localhost:8090   SR localhost:8081
+#   dc-b  Kafka localhost:9093   embedded REST v3 localhost:8091   SR localhost:8082
+#   connect REST localhost:8083 (profile mm2)
+# Inside the Docker network use dc-a:29092 / dc-b:29092 / sr-a:8081 / sr-b:8081.
+#
+# Start:   docker compose up -d                  (both clusters)
+#          docker compose --profile mm2 up -d    (plus the Connect worker for MM2)
+# Stop:    docker compose stop                   (keeps data)
+# Reset:   docker compose --profile mm2 down -v  (deletes all data)
+
+name: crash-course
+
+# To change the CP version, change all four image tags together (cp-server, cp-schema-registry x2,
+# cp-kafka-connect). Fallback if 8.4.0 misbehaves: 8.3.x.
+
+services:
+
+  dc-a:
+    image: confluentinc/cp-server:8.4.0
+    hostname: dc-a
+    container_name: dc-a
+    ports:
+      - "9092:9092"   # PLAINTEXT_HOST, for clients on the laptop
+      - "8090:8090"   # Confluent Server embedded REST API v3 (/kafka/v3/...)
+    environment:
+      # --- KRaft, combined mode, single node ---
+      CLUSTER_ID: "Q0PvpgzYSwirapvmRY0NFg"          # fixed so labs can hard-code it
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@dc-a:29093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENERS: "PLAINTEXT://dc-a:29092,CONTROLLER://dc-a:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://dc-a:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      # --- single-node replication factors ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # --- Cluster Linking (Confluent Server feature) ---
+      KAFKA_CONFLUENT_CLUSTER_LINK_ENABLE: "true"
+      KAFKA_CONFLUENT_CLUSTER_LINK_METADATA_TOPIC_REPLICATION_FACTOR: 1   # lab only; 3+ in production
+      # --- Broker-side schema ID validation needs the broker to know its registry ---
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: "http://sr-a:8081"
+      # --- Embedded REST API v3 (used for reverse-and-start / truncate-and-restore) ---
+      KAFKA_CONFLUENT_HTTP_SERVER_LISTENERS: "http://0.0.0.0:8090"
+      # --- keep the laptop quiet ---
+      CONFLUENT_METRICS_ENABLE: "false"
+      CONFLUENT_SUPPORT_CUSTOMER_ID: "anonymous"
+    volumes:
+      - dc-a-data:/var/lib/kafka/data
+      - ./work:/work           # lab files (link configs, filters, schemas) shared with the host
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server dc-a:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  sr-a:
+    image: confluentinc/cp-schema-registry:8.4.0
+    hostname: sr-a
+    container_name: sr-a
+    depends_on:
+      dc-a:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: "sr-a"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://dc-a:29092"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      # Data contracts (rules) + Schema Linking (exporters). Both are Enterprise features.
+      SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS: "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension,io.confluent.schema.exporter.SchemaExporterResourceExtension"
+      SCHEMA_REGISTRY_KAFKASTORE_UPDATE_HANDLERS: "io.confluent.schema.exporter.storage.SchemaExporterUpdateHandler"
+      SCHEMA_REGISTRY_PASSWORD_ENCODER_SECRET: "crash-course-lab-only"   # must match on sr-a and sr-b
+      SCHEMA_REGISTRY_MODE_MUTABILITY: "true"                            # allow IMPORT / READONLY modes
+      SCHEMA_REGISTRY_CONFLUENT_LICENSE_REPLICATION_FACTOR: 1            # [untested] single-broker licence topic
+    volumes:
+      - ./work:/work
+
+  dc-b:
+    image: confluentinc/cp-server:8.4.0
+    hostname: dc-b
+    container_name: dc-b
+    ports:
+      - "9093:9093"
+      - "8091:8090"
+    environment:
+      CLUSTER_ID: "UmwHWmvUR6KH9yIQ3xbmhg"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@dc-b:29093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENERS: "PLAINTEXT://dc-b:29092,CONTROLLER://dc-b:29093,PLAINTEXT_HOST://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://dc-b:29092,PLAINTEXT_HOST://localhost:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_CLUSTER_LINK_ENABLE: "true"
+      KAFKA_CONFLUENT_CLUSTER_LINK_METADATA_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: "http://sr-b:8081"
+      KAFKA_CONFLUENT_HTTP_SERVER_LISTENERS: "http://0.0.0.0:8090"
+      CONFLUENT_METRICS_ENABLE: "false"
+      CONFLUENT_SUPPORT_CUSTOMER_ID: "anonymous"
+    volumes:
+      - dc-b-data:/var/lib/kafka/data
+      - ./work:/work
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server dc-b:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  sr-b:
+    image: confluentinc/cp-schema-registry:8.4.0
+    hostname: sr-b
+    container_name: sr-b
+    depends_on:
+      dc-b:
+        condition: service_healthy
+    ports:
+      - "8082:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: "sr-b"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://dc-b:29092"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS: "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension,io.confluent.schema.exporter.SchemaExporterResourceExtension"
+      SCHEMA_REGISTRY_KAFKASTORE_UPDATE_HANDLERS: "io.confluent.schema.exporter.storage.SchemaExporterUpdateHandler"
+      SCHEMA_REGISTRY_PASSWORD_ENCODER_SECRET: "crash-course-lab-only"
+      SCHEMA_REGISTRY_MODE_MUTABILITY: "true"
+      SCHEMA_REGISTRY_CONFLUENT_LICENSE_REPLICATION_FACTOR: 1
+    volumes:
+      - ./work:/work
+
+  # Optional: Kafka Connect worker for the MirrorMaker 2 comparison (01-hybrid-multicloud lab).
+  # MM2 connectors (MirrorSourceConnector, MirrorCheckpointConnector, MirrorHeartbeatConnector)
+  # ship with Apache Kafka; the community cp-kafka-connect image should list them under
+  # /connector-plugins. [untested] Runs "near the target": its own topics live on dc-b.
+  connect:
+    image: confluentinc/cp-kafka-connect:8.4.0
+    hostname: connect
+    container_name: connect
+    profiles: ["mm2"]
+    depends_on:
+      dc-a:
+        condition: service_healthy
+      dc-b:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "dc-b:29092"
+      CONNECT_REST_PORT: 8083
+      CONNECT_REST_ADVERTISED_HOST_NAME: "connect"
+      CONNECT_GROUP_ID: "mm2-dc-b"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_mm2-connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_mm2-connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_mm2-connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # MM2 copies bytes; the worker converters must not touch them.
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.converters.ByteArrayConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.converters.ByteArrayConverter"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+      # Let connectors override producer/consumer client settings (needed for target/source clients).
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: "All"
+    volumes:
+      - ./work:/work
+
+volumes:
+  dc-a-data:
+  dc-b-data:

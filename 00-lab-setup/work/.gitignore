@@ -1,0 +1,4 @@
+# Scratch folder mounted into the containers at /work. Lab files are generated here.
+# Link configs can contain API secrets, so nothing in here is committed.
+*
+!.gitignore

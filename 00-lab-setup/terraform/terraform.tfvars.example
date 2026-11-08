@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (git-ignored) only if you want to change defaults.
+# Credentials go in environment variables, not here:
+#   export CONFLUENT_CLOUD_API_KEY=...
+#   export CONFLUENT_CLOUD_API_SECRET=...
+
+region                         = "westeurope"
+enable_paid_dedicated          = false
+enable_paid_enterprise_private = false
+dedicated_cku                  = 1

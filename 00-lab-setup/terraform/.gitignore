@@ -1,0 +1,7 @@
+# State holds API secrets in plain text. Never commit it.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log
