@@ -214,7 +214,7 @@ kafka-console-consumer.sh --bootstrap-server $BOOT --consumer.config /tmp/oauth.
 kafka-console-consumer.sh --bootstrap-server $BOOT --consumer.config /tmp/oauth.properties \
   --topic customers.customer-journey.v1 --group analytics-oauth --from-beginning --max-messages 1 --timeout-ms 15000
 echo 'x:1' | kafka-console-producer.sh --bootstrap-server $BOOT --producer.config /tmp/oauth.properties \
-  --topic sites.queue-length.measured.v1 --property parse.key=true --property key.separator=:
+  --topic sites.queue-length.measured.v1 --reader-property parse.key=true --reader-property key.separator=:
 ```
 
 | Test | Expected |

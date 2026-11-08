@@ -308,7 +308,7 @@ ssh azureuser@$VM_IP
 # on the VM:
 sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-21-jre-headless dnsutils jq netcat-openbsd
 curl -sL --http1.1 https://cnfl.io/cli | sudo sh -s -- -b /usr/local/bin
-KV=4.1.1   # pick the current Kafka 4.x from https://downloads.apache.org/kafka/ [V]
+KV=4.4.0   # same Kafka as the CP 8.4 images; >= 4.2 needed for --reader-property. Check https://downloads.apache.org/kafka/ [V]
 curl -sO https://downloads.apache.org/kafka/$KV/kafka_2.13-$KV.tgz && tar xzf kafka_2.13-$KV.tgz
 export PATH=$PATH:$HOME/kafka_2.13-$KV/bin
 
@@ -327,7 +327,7 @@ kafka-topics.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.propert
 kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -E '^[^ ]+:9092' | cut -d' ' -f1
 for b in $(kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -oE '^[^ ]+:9092' | cut -d: -f1 | head -3); do dig +short $b | tail -1; done
 echo 'IT-123:{"itemTag":"IT-123","scan":"SORTER-3"}' | kafka-console-producer.sh --bootstrap-server $BOOT_PL:9092 \
-  --producer.config cc-ent.properties --topic tracking.item-scan.recorded.v1 --property parse.key=true --property key.separator=:
+  --producer.config cc-ent.properties --topic tracking.item-scan.recorded.v1 --reader-property parse.key=true --reader-property key.separator=:
 kafka-console-consumer.sh --bootstrap-server $BOOT_PL:9092 --consumer.config cc-ent.properties \
   --topic tracking.item-scan.recorded.v1 --from-beginning --max-messages 1
 ```
@@ -335,7 +335,7 @@ kafka-console-consumer.sh --bootstrap-server $BOOT_PL:9092 --consumer.config cc-
 Expected:
 - Every broker name resolves to the **same private endpoint IP** (the wildcard). That is the point of the SNI proxy design.
 - Topic created, one record produced and consumed.
-- `--property` may print a deprecation warning on newer Kafka 4.x tools (`--reader-property` / `--formatter-property`) **[V]**.
+- The console tools use `--reader-property` (producer) / `--formatter-property` (consumer). Kafka 4.2+ deprecates `--property`; Kafka ≤ 4.1 only knows `--property`.
 
 Also try the Confluent CLI from the VM (`confluent login`, `confluent kafka topic list --cluster $ENT`) — the control plane is public, the data plane goes through the private endpoint.
 

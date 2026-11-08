@@ -185,8 +185,8 @@ echo 'not-avro' | a kafka-console-producer \
 echo '{"orderId":"SO-1001234","status":"READY","location":{"string":"ZONE-D7"},"eventTime":1762500000000}' \
 | sra kafka-avro-console-producer \
   --bootstrap-server dc-a:29092 --topic orders.order-status.updated.v1 \
-  --property schema.registry.url=http://localhost:8081 \
-  --property value.schema.id=1 --property auto.register.schemas=false
+  --reader-property schema.registry.url=http://localhost:8081 \
+  --reader-property value.schema.id=1 --reader-property auto.register.schemas=false
 ```
 
 Expected: (1) the producer logs an error containing `InvalidRecordException` / "This record has
