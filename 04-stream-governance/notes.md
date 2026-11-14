@@ -1,5 +1,5 @@
 ---
-title: 03 — Stream Governance
+title: 04 — Stream Governance
 subtitle: Schema Registry, data contracts, Stream Catalog, Stream Lineage, Data Portal, data as a product — course content checked against Confluent docs on 2026-11-07
 ---
 

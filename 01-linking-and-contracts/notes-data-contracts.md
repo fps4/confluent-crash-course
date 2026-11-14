@@ -1,5 +1,5 @@
 ---
-title: 08b — Data contracts in Schema Registry
+title: 01b — Data contracts in Schema Registry
 subtitle: Metadata, tags, CEL / CEL_FIELD rules, DLQ action, JSONata migration with compatibility groups, global rule sets. Checked against CP 8.4 / CC docs on 2026-11-07.
 ---
 
@@ -52,7 +52,7 @@ flowchart TB
 |---|---|---|
 | `name`, `doc` | free text | name also selects a specific executor config |
 | `kind` | `CONDITION` (true/false) or `TRANSFORM` (changes data) | |
-| `type` | `CEL`, `CEL_FIELD`, `JSONATA`, `ENCRYPT` (CSFLE, module 04), custom | executor chosen by type |
+| `type` | `CEL`, `CEL_FIELD`, `JSONATA`, `ENCRYPT` (CSFLE, module 05), custom | executor chosen by type |
 | `mode` | domain: `WRITE`, `READ`, `WRITEREAD`; migration: `UPGRADE`, `DOWNGRADE`, `UPDOWN` | |
 | `tags` | e.g. `["PII"]` | rule applies to fields with these tags |
 | `params` | key/value | e.g. `dlq.topic` |
@@ -64,7 +64,7 @@ flowchart TB
 broker never runs them. Consequences:
 
 - A producer that does not use the Confluent serializer, or uses an old one, skips them. That is why
-  broker-side ID validation (module 08 notes §3) and a platform producer template are needed.
+  broker-side ID validation (module 01 notes §3) and a platform producer template are needed.
 - **Not executed** in Kafka Connect on Confluent Cloud, Flink SQL, or ksqlDB (CP or CC). Control
   Center does not show metadata/rules.
 - Only the **root** schema's rule set runs, not the rule sets of referenced schemas — except

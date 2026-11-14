@@ -82,7 +82,7 @@ output "private_link_attachment_id" {
 }
 
 output "private_link_service_alias" {
-  description = "Azure Private Link service alias for module 02's private endpoint."
+  description = "Azure Private Link service alias for module 03's private endpoint."
   value       = try(confluent_private_link_attachment.azure[0].azure[0].private_link_service_alias, null)
 }
 

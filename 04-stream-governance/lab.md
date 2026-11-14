@@ -1,5 +1,5 @@
 ---
-title: 03 — Lab — Stream Governance
+title: 04 — Lab — Stream Governance
 subtitle: Schemas with tags and metadata, compatibility gates, broker-side validation, catalog search, lineage, Data Portal — CLI and curl first, then Terraform
 ---
 
@@ -307,12 +307,12 @@ confluent kafka topic produce orders.order-status.updated.v1 \
 # paste a few JSON lines like the one in A3, then Ctrl-D
 
 confluent kafka topic consume orders.order-status.updated.v1 --from-beginning \
-  --group lab03-lineage --value-format avro \
+  --group lab04-lineage --value-format avro \
   --schema-registry-api-key ${SR_AUTH%%:*} --schema-registry-api-secret ${SR_AUTH#*:}
 ```
 
 Then: Console → environment `crash-course` → cluster `cc-basic` → **Stream Lineage**. Expected:
-a producer node → topic → consumer group `lab03-lineage`. Wait 10+ minutes and refresh: the
+a producer node → topic → consumer group `lab04-lineage`. Wait 10+ minutes and refresh: the
 nodes disappear (Essentials window). That is the lesson: lineage shows activity, not
 ownership. [V: CLI flag names for SR credentials differ by CLI version; `--schema` may register
 the schema if it is new — set `--schema-id` instead if your CLI supports it.]
@@ -407,7 +407,7 @@ Needs a Standard (or higher) cluster and a second user in the organisation with 
 
 # Same end state in Terraform
 
-Save under `03-stream-governance/terraform/`. Pin the provider; `2.94.0` was released
+Save under `04-stream-governance/terraform/`. Pin the provider; `2.94.0` was released
 2026-11-06 [V].
 
 `versions.tf`:
@@ -646,7 +646,7 @@ type, mode, expr, on_failure, params). Advanced only. Do not leave empty `metada
 Run:
 
 ```bash
-cd 03-stream-governance/terraform
+cd 04-stream-governance/terraform
 terraform init && terraform plan -out tf.plan && terraform apply tf.plan
 ```
 
@@ -671,7 +671,7 @@ The last check is the point of "Git is the source of truth": the console edit is
 
 ```bash
 # Terraform path
-cd 03-stream-governance/terraform && terraform destroy
+cd 04-stream-governance/terraform && terraform destroy
 
 # CLI path (if you did not use Terraform). Keep orders.order-status.updated.v1: 00-lab-setup owns it.
 confluent kafka topic delete customers.customer-journey.v1 --force

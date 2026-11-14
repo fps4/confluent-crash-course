@@ -1,5 +1,5 @@
 ---
-title: 04 — Lab — encrypt customer PII with a KEK in Azure Key Vault
+title: 05 — Lab — encrypt customer PII with a KEK in Azure Key Vault
 subtitle: CSFLE on customers.customer-journey.v1. Consumers with and without key access, two checks (Confluent RBAC on the KEK, Azure RBAC on the key), rotation. Confluent Cloud path first, local CP path as a variant.
 ---
 
@@ -92,7 +92,7 @@ Service accounts — one per consumer pattern, so we can show the Confluent RBAC
 
 ```bash
 for sa in sa-csfle-producer sa-csfle-reader sa-csfle-nokek; do
-  confluent iam service-account create $sa --description "lab04" -o json > /tmp/$sa.json
+  confluent iam service-account create $sa --description "lab05" -o json > /tmp/$sa.json
 done
 P=$(jq -r .id /tmp/sa-csfle-producer.json); R=$(jq -r .id /tmp/sa-csfle-reader.json); N=$(jq -r .id /tmp/sa-csfle-nokek.json)
 ```
@@ -104,7 +104,7 @@ confluent kafka topic create customers.customer-journey.v1 --partitions 3
 confluent kafka acl create --allow --service-account $P --operations write,describe --topic customers. --prefix
 for s in $R $N; do
   confluent kafka acl create --allow --service-account $s --operations read,describe --topic customers. --prefix
-  confluent kafka acl create --allow --service-account $s --operations read --consumer-group lab04- --prefix
+  confluent kafka acl create --allow --service-account $s --operations read --consumer-group lab05- --prefix
 done
 for s in $P $R $N; do
   confluent api-key create --resource $CSFLE_CL --service-account $s -o json > /tmp/kafka-$s.json
@@ -243,9 +243,9 @@ kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.customer-
 
 | Case | Command | Expected |
 |---|---|---|
-| A — full access | `consume /tmp/reader.properties $R /tmp/sp-reader.json lab04-a` | `customer_name: "Anna de Vries"`, `national_id: "ID1234567"` in plaintext |
-| B — Key Vault yes, KEK RBAC no | `consume /tmp/nokek.properties $N /tmp/sp-reader.json lab04-b` | record printed, PII fields are base64 ciphertext; log shows a 403 from the DEK Registry |
-| C — KEK RBAC yes, Key Vault no | `consume /tmp/reader.properties $R /tmp/sp-nokv.json lab04-c` | PII fields ciphertext; log shows a Key Vault `Forbidden` on decrypt |
+| A — full access | `consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a` | `customer_name: "Anna de Vries"`, `national_id: "ID1234567"` in plaintext |
+| B — Key Vault yes, KEK RBAC no | `consume /tmp/nokek.properties $N /tmp/sp-reader.json lab05-b` | record printed, PII fields are base64 ciphertext; log shows a 403 from the DEK Registry |
+| C — KEK RBAC yes, Key Vault no | `consume /tmp/reader.properties $R /tmp/sp-nokv.json lab05-c` | PII fields ciphertext; log shows a Key Vault `Forbidden` on decrypt |
 | D — no rule executor credentials at all | same as A without the three `rule.executors…` lines | default Azure credential chain fails → ciphertext (or uses your `az login` identity if the chain finds it — interesting to observe) |
 | Raw | `kafka-console-consumer --bootstrap-server $BOOT --consumer.config /tmp/reader.properties --topic customers.customer-journey.v1 --from-beginning --max-messages 2` | Avro bytes; `SO-1001234`, `ZONE-A2` visible, names not visible |
 
@@ -272,7 +272,7 @@ Expected: the KEK has `kmsKeyId` = your Key Vault URI and `shared: false`. The D
 ```bash
 az role assignment delete --assignee $(jq -r .appId /tmp/sp-reader.json) --role "Key Vault Crypto User" --scope $KEY_SCOPE
 sleep 60
-consume /tmp/reader.properties $R /tmp/sp-reader.json lab04-a2
+consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a2
 ```
 
 Expected: ciphertext now (new process, no cached DEK). A long-running consumer would keep plaintext until its DEK cache or token expires — this is the answer to "how fast is revocation?". Re-add the role after.
@@ -282,7 +282,7 @@ Expected: ciphertext now (new process, no cached DEK). A long-running consumer w
 ```bash
 az keyvault key rotate --vault-name $KV -n kek-customers
 az keyvault key list-versions --vault-name $KV -n kek-customers --query '[].kid' -o tsv
-consume /tmp/reader.properties $R /tmp/sp-reader.json lab04-a3
+consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a3
 ```
 
 Expected: still plaintext, because the KEK was registered with a **versioned** URI and the old version is still enabled. Now think about the other case: if the KEK had been registered **without** a version, the client would resolve to the latest version, which did not wrap the existing DEK → unwrap fails → ciphertext. The fix is `encrypt.azure.key.version.save=true` and rewrapping DEKs before rotation (CC manage-keys doc). Rewrapping uses the `rewrap-deks` tool or the DEK API with `rewrap=true` **[V]** — read the doc, do not run it blind.
@@ -398,13 +398,13 @@ locals { sas = toset(["producer", "reader", "nokek"]) }
 resource "confluent_service_account" "sa" {
   for_each     = local.sas
   display_name = "sa-csfle-${each.key}"
-  description  = "lab04"
+  description  = "lab05"
 }
 
 # Admin SA for Terraform data-plane calls (topic, schema, tag, KEK)
 resource "confluent_service_account" "admin" {
   display_name = "sa-csfle-admin"
-  description  = "lab04 admin"
+  description  = "lab05 admin"
 }
 resource "confluent_role_binding" "admin_cluster" {
   principal   = "User:${confluent_service_account.admin.id}"
@@ -497,7 +497,7 @@ resource "confluent_kafka_acl" "group" {
   kafka_cluster { id = confluent_kafka_cluster.basic.id }
   rest_endpoint = confluent_kafka_cluster.basic.rest_endpoint
   resource_type = "GROUP"
-  resource_name = "lab04-"
+  resource_name = "lab05-"
   pattern_type  = "PREFIXED"
   principal     = "User:${confluent_service_account.sa[each.key].id}"
   host          = "*"
@@ -654,7 +654,7 @@ Then repeat 1.3–1.5 against the local SR (no auth), with either:
 - **Azure Key Vault**: same rule and credentials as above — the client talks to Key Vault directly; the local DEK Registry never needs Azure access. This mirrors the on-prem producer in the target design.
 - **Local KMS (offline)**: rule params `"encrypt.kms.type": "local-kms"`, `"encrypt.kms.key.id": "lab-key"` **[V]**, and client property `rule.executors._default_.param.secret=$(openssl rand -base64 16)` (or env `LOCAL_SECRET`). Testing only.
 
-Optional, connects to module 03/Cluster Linking: if `dc-b` has a Schema Registry and you run a schema exporter from `dc-a` to `dc-b`, check whether the DEK appears in `dc-b`'s `/dek-registry/v1/keks/kek-customers/deks` — the CC docs say Schema Linking copies DEKs and KEK pointers.
+Optional, connects to module 04/Cluster Linking: if `dc-b` has a Schema Registry and you run a schema exporter from `dc-a` to `dc-b`, check whether the DEK appears in `dc-b`'s `/dek-registry/v1/keks/kek-customers/deks` — the CC docs say Schema Linking copies DEKs and KEK pointers.
 
 ---
 

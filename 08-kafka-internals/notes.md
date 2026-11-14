@@ -1,5 +1,5 @@
 ---
-title: 07 — Kafka internals (part 1)
+title: 08 — Kafka internals (part 1)
 subtitle: Brokers, storage, replication and ISR, KRaft control plane, producer internals, guarantees — each internal tied to an architecture consequence. Kafka 4.x / CP 8.x, checked 2026-11-07.
 ---
 
@@ -25,7 +25,7 @@ Source: https://developer.confluent.io/courses/architecture/get-started/
 - A **storage layer** (brokers holding partition logs) and a **compute layer** (producers,
   consumers, Connect, Streams, Flink) that only talks to it through the Producer/Consumer APIs.
 - Record = timestamp, key, value, headers. Key and value are **bytes** to the broker. The broker
-  never parses payloads (one exception: Confluent broker-side schema *ID* validation, module 03).
+  never parses payloads (one exception: Confluent broker-side schema *ID* validation, module 04).
 - Topic → partitions. A partition is an append-only log; offsets increase and are never reused.
   **Partition = unit of ordering, parallelism and placement.**
 

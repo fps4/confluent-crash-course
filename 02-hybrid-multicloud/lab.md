@@ -1,5 +1,5 @@
 ---
-title: "01 — Lab: Cluster Linking DR between two DCs, failback, and MirrorMaker 2 for comparison"
+title: "02 — Lab: Cluster Linking DR between two DCs, failback, and MirrorMaker 2 for comparison"
 subtitle: Environment local (Docker); Terraform part needs paid-session. Written 2026-11-07, untested.
 ---
 
@@ -622,7 +622,7 @@ confluent kafka mirror failover orders.order-status.updated.v1 --link cc-dr-link
 # local
 b kafka-cluster-links --bootstrap-server dc-b:29092 --delete --link bidi-link   # mirror topics must be STOPPED/removed first
 a kafka-cluster-links --bootstrap-server dc-a:29092 --delete --link bidi-link
-docker compose -f $LAB/docker-compose.yml --profile mm2 down -v                 # or keep for module 08
+docker compose -f $LAB/docker-compose.yml --profile mm2 down -v                 # or keep for module 01
 
 # paid-session
 cd $LAB/work/tf-01 && terraform destroy        # if a mirror was failed over: terraform state rm the mirror first

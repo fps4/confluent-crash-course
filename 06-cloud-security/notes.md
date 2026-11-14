@@ -1,5 +1,5 @@
 ---
-title: 05 — Confluent Cloud security
+title: 06 — Confluent Cloud security
 subtitle: API keys vs OAuth with Entra ID (client credentials, group overage), RBAC and prefixes, ACLs, audit logs, BYOK, client quotas. CP-side (mTLS, OAUTHBEARER, MDS RBAC) is in notes-cp-security.md. Checked against docs on 2026-11-07.
 ---
 
@@ -130,7 +130,7 @@ Source: https://developer.confluent.io/courses/cloud-security/encryption/ + BYOK
 - **BYOK (self-managed keys)** on Azure: **Dedicated** and **Enterprise** **[V]**; not Freight. Chosen **at cluster creation**, cannot be added later.
 - Azure Key Vault requirements: **RSA or RSA-HSM** key, **purge protection on**, Azure RBAC on the vault; Confluent gives a CLI snippet that grants its app **Key Vault Crypto Service Encryption User** + **Key Vault Reader**. Dedicated with vault firewall: allow trusted Microsoft services. **Enterprise: vault must allow public access from all networks** — a point your security team will notice.
 - Revoking or deleting the key makes the cluster unusable. Never delete old key versions. After cluster deletion the key is released after a 5-day cool-down.
-- BYOK protects storage; operators and authorised clients still see plaintext. For field-level protection see module 04 (CSFLE).
+- BYOK protects storage; operators and authorised clients still see plaintext. For field-level protection see module 05 (CSFLE).
 
 ### 2.9 Client quotas
 
@@ -145,7 +145,7 @@ Source: client quotas doc.
 | Semantics | each listed principal gets the full value (not shared); enforced at cluster level; a ceiling, not a guarantee; shows up as **throttle latency** on the client |
 | Pools | works only when exactly **one** pool matches the client |
 
-### 2.10 Network controls (link to module 02)
+### 2.10 Network controls (link to module 03)
 
 Private networking (Private Link) and **IP filtering** (IP groups + operation groups, public traffic only). mTLS on CC: Dedicated clusters on Azure; Enterprise/Freight on AWS **[V]**; uses a private CA uploaded as a certificate authority plus certificate identity pools. Public CAs are removing the `clientAuth` EKU in 2026 — plan a private CA for any mTLS, on-prem too.
 
@@ -227,7 +227,7 @@ flowchart LR
 | RBAC roles list | New roles: **NetworkAdmin**, **FlinkAdmin/FlinkDeveloper/FlinkFunctionDeveloper**, **DataSteward/DataDiscovery**, USM roles for registered CP clusters, ParentAdmin | predefined roles doc |
 | Kafka client config | Kafka **4.x** Java clients need the **allowed URLs** system property for OAuth endpoints | Kafka 4.0 notes, CVE-2025-27817 |
 | Schema Registry auth = API key | SR also accepts OAuth (own token or inherited from Kafka login) | Java client OAuth doc |
-| (Not covered) KEK resources | RBAC on **KEKs** for CSFLE | module 04 |
+| (Not covered) KEK resources | RBAC on **KEKs** for CSFLE | module 05 |
 
 ---
 

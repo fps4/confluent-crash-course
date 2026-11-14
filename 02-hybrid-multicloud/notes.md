@@ -1,5 +1,5 @@
 ---
-title: 01 — Hybrid and multicloud architecture
+title: 02 — Hybrid and multicloud architecture
 subtitle: Cluster Linking, MirrorMaker 2 and Replicator, checked against Confluent Platform 8.4 / Confluent Cloud docs on 2026-11-07
 ---
 

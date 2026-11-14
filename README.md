@@ -23,14 +23,14 @@ Q&A, sources) and `lab.md`.
 
 | Order | Module | Source | Lab environment |
 |---|---|---|---|
-| 1 | [08 Linking and data contracts](08-linking-and-contracts/notes.md) · [contracts](08-linking-and-contracts/notes-data-contracts.md) · [lab](08-linking-and-contracts/lab.md) | Confluent docs (no course exists) | local → cc-basic → paid-session |
-| 2 | [01 Hybrid and multicloud](01-hybrid-multicloud/notes.md) · [lab](01-hybrid-multicloud/lab.md) | Hybrid and Multicloud Architecture course | local (+ paid link) |
-| 3 | [02 Cloud networking — Azure](02-cloud-networking-azure/notes.md) · [lab](02-cloud-networking-azure/lab.md) | Confluent Cloud Networking course, rewritten for Azure | cc-basic → paid-session |
-| 4 | [03 Stream governance](03-stream-governance/notes.md) · [lab](03-stream-governance/lab.md) | Streaming Data Governance course | local → cc-basic |
-| 5 | [04 CSFLE](04-csfle/notes.md) · [lab](04-csfle/lab.md) | CSFLE course + docs | `crash-course-csfle` (Advanced) |
-| 6 | [05 Security](05-cloud-security/notes.md) · [CP side](05-cloud-security/notes-cp-security.md) · [lab](05-cloud-security/lab.md) | Confluent Cloud Security course + docs | `cc-std-lab05` + paid-session |
-| 7 | [06 Production systems](06-production-systems/notes.md) · [lab](06-production-systems/lab.md) | Mastering Production Data Streaming Systems | local → cc-basic |
-| 8 | [07 Kafka internals](07-kafka-internals/notes.md) · [clients and storage](07-kafka-internals/notes-clients-and-storage.md) · [lab](07-kafka-internals/lab.md) | Apache Kafka Internal Architecture | local (3-broker override) |
+| 1 | [08 Linking and data contracts](01-linking-and-contracts/notes.md) · [contracts](01-linking-and-contracts/notes-data-contracts.md) · [lab](01-linking-and-contracts/lab.md) | Confluent docs (no course exists) | local → cc-basic → paid-session |
+| 2 | [01 Hybrid and multicloud](02-hybrid-multicloud/notes.md) · [lab](02-hybrid-multicloud/lab.md) | Hybrid and Multicloud Architecture course | local (+ paid link) |
+| 3 | [02 Cloud networking — Azure](03-cloud-networking-azure/notes.md) · [lab](03-cloud-networking-azure/lab.md) | Confluent Cloud Networking course, rewritten for Azure | cc-basic → paid-session |
+| 4 | [03 Stream governance](04-stream-governance/notes.md) · [lab](04-stream-governance/lab.md) | Streaming Data Governance course | local → cc-basic |
+| 5 | [04 CSFLE](05-csfle/notes.md) · [lab](05-csfle/lab.md) | CSFLE course + docs | `crash-course-csfle` (Advanced) |
+| 6 | [05 Security](06-cloud-security/notes.md) · [CP side](06-cloud-security/notes-cp-security.md) · [lab](06-cloud-security/lab.md) | Confluent Cloud Security course + docs | `cc-std-lab06` + paid-session |
+| 7 | [06 Production systems](07-production-systems/notes.md) · [lab](07-production-systems/lab.md) | Mastering Production Data Streaming Systems | local → cc-basic |
+| 8 | [07 Kafka internals](08-kafka-internals/notes.md) · [clients and storage](08-kafka-internals/notes-clients-and-storage.md) · [lab](08-kafka-internals/lab.md) | Apache Kafka Internal Architecture | local (3-broker override) |
 
 ## Lab environments and cost
 
@@ -40,7 +40,7 @@ Details, versions and licence terms: [00-lab-setup](00-lab-setup/README.md).
 |---|---|---|
 | `local` | Docker: two single-node KRaft CP 8.4 clusters `dc-a`, `dc-b` (stand-ins for two on-prem data centres), one Schema Registry each, optional MirrorMaker 2 worker | free (developer licence [V]) |
 | `cc-basic` | Confluent Cloud environment `crash-course` (Stream Governance Essentials), Basic cluster on Azure westeurope | near zero; covered by trial credits |
-| `cc-std-lab05` | temporary Standard cluster — Basic has no RBAC, OAuth or audit logs | ~1–2 USD for 2 h [V] |
+| `cc-std-lab06` | temporary Standard cluster — Basic has no RBAC, OAuth or audit logs | ~1–2 USD for 2 h [V] |
 | `crash-course-csfle` | throwaway environment with Stream Governance Advanced (the upgrade cannot be undone) | small [V] |
 | `paid-session` | one same-day session: **Enterprise** cluster on Azure (Private Link Gateway, Cluster Linking destination, quotas) + VNet/VM; a Dedicated toggle exists for broker-side validation | < 10 USD for 3 h estimated [V]; `terraform destroy` the same day |
 
@@ -56,7 +56,7 @@ Pinned (2026-11-07): CP 8.4.0 images, Confluent CLI v4.82.0, Terraform `confluen
 - `jq`, `curl`, `dig`, `openssl`.
 - Confluent CLI v4.82.0 or later, Terraform ≥ 1.5.
 - A Confluent Cloud account (for `cc-basic` and the paid parts).
-- For module 02 and the paid session: an Azure subscription where you can create resource groups,
+- For module 03 and the paid session: an Azure subscription where you can create resource groups,
   and the `az` CLI.
 - Basic Kafka knowledge: topics, partitions, consumer groups, producers and consumers.
 
@@ -78,7 +78,7 @@ Terraform validated, compose tested; labs not all run end to end — see the [V]
 - Most labs have not yet been run end to end against a live cluster. Expect small fixes on first
   run (CLI flags, REST bodies, licence behaviour). Each lab lists its [V] items at the end.
 - In `00-lab-setup/terraform/paid-session.tf` the Enterprise toggle uses the older PrivateLink
-  Attachment. Use module 02's lab instead, which builds the current Gateway + Access Point model.
+  Attachment. Use module 03's lab instead, which builds the current Gateway + Access Point model.
 - Content is written in our own words from the Confluent courses and current docs; course URLs are
   cited per section.
 

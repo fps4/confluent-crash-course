@@ -1,5 +1,5 @@
 ---
-title: 07 — Lab — Kafka internals
+title: 08 — Lab — Kafka internals
 subtitle: ISR shrink and expand, acks=all vs acks=1 with min.insync.replicas, simulated cross-DC latency, compaction, a KIP-848 consumer group, a share group, a controller outage, tiered storage on MinIO
 ---
 
@@ -39,7 +39,7 @@ brokers, so ISR changes can still be recorded. E6 then stops the controller on p
   three-broker cluster, so it starts a **30-day trial** for this cluster only (it does not touch
   `dc-a`/`dc-b`). Fine for a lab; `down -v` and start again if it expires.
 
-`07-kafka-internals/docker-compose.3broker.yml` (create it from this snippet):
+`08-kafka-internals/docker-compose.3broker.yml` (create it from this snippet):
 
 ```yaml
 name: internals
@@ -111,7 +111,7 @@ services:
 Start and set helpers:
 
 ```bash
-cd 07-kafka-internals
+cd 08-kafka-internals
 docker compose -f docker-compose.3broker.yml up -d
 export K="docker exec -i internals-b1-1"           # run tools inside b1
 export BS="b1:29092,b2:29092,b3:29092"
@@ -438,7 +438,7 @@ The internals are not configurable in Confluent Cloud (RF is fixed at 3, no brok
 hidden, no unclean election). What you **can** declare are the topic-level settings from E1 and
 E3. On `cc-basic` — `orders.order-status.updated.v1` already exists there (owned by
 `00-lab-setup`, where you would set `min.insync.replicas`), so this creates only the compacted
-current-state topic. Save as `07-kafka-internals/terraform/main.tf`:
+current-state topic. Save as `08-kafka-internals/terraform/main.tf`:
 
 ```hcl
 terraform {

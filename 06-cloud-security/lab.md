@@ -1,5 +1,5 @@
 ---
-title: 05 — Lab — team service accounts, prefix RBAC, OAuth with Entra ID, audit log, quotas
+title: 06 — Lab — team service accounts, prefix RBAC, OAuth with Entra ID, audit log, quotas
 subtitle: Part 1 on cc-basic (ACLs, because Basic has no Kafka RBAC), Part 2 on a temporary Standard cluster (RBAC, OAuth, audit log), Part 3 quota in the paid-session, Part 4 quotas on local CP
 ---
 
@@ -16,13 +16,13 @@ subtitle: Part 1 on cc-basic (ACLs, because Basic has no Kafka RBAC), Part 2 on 
 | Feature | Basic | Standard | Enterprise | Where this lab does it |
 |---|---|---|---|---|
 | Service accounts, API keys, ACLs | yes | yes | yes | Part 1, `cc-basic` |
-| RBAC on topics / groups | **no** | yes | yes | Part 2, `cc-std-lab05` |
+| RBAC on topics / groups | **no** | yes | yes | Part 2, `cc-std-lab06` |
 | OAuth for Kafka | **no** | yes | yes | Part 2 |
 | Audit logs | **no** | yes | yes | Part 2 |
-| Client quotas | **no** | **no** | yes | Part 3, `paid-session` Enterprise cluster (module 02) |
+| Client quotas | **no** | **no** | yes | Part 3, `paid-session` Enterprise cluster (module 03) |
 | Quotas incl. `request_percentage` | — | — | — | Part 4, `local` `dc-a` |
 
-`cc-std-lab05` = a **Standard** cluster on Azure `westeurope` in environment `crash-course`, created at the start of Part 2 and deleted at the end. List price is 0.75 USD per eCKU-hour and Standard scales to zero when idle **[V]**, so 2 hours cost about 1–2 USD. This is an addition to the agreed environments; it is the cheapest way to test RBAC, OAuth and audit logs. If you prefer, run Part 2 against the paid-session Enterprise cluster from the VM instead (Enterprise supports all of it) — then skip the Standard cluster.
+`cc-std-lab06` = a **Standard** cluster on Azure `westeurope` in environment `crash-course`, created at the start of Part 2 and deleted at the end. List price is 0.75 USD per eCKU-hour and Standard scales to zero when idle **[V]**, so 2 hours cost about 1–2 USD. This is an addition to the agreed environments; it is the cheapest way to test RBAC, OAuth and audit logs. If you prefer, run Part 2 against the paid-session Enterprise cluster from the VM instead (Enterprise supports all of it) — then skip the Standard cluster.
 
 ## Prerequisites
 
@@ -51,7 +51,7 @@ for t in orders.order-status.updated.v1 tracking.item-scan.recorded.v1 sites.que
 done
 
 for sa in sa-orders-producer sa-analytics-consumer sa-sites-app; do
-  confluent iam service-account create $sa --description "lab05 team account" -o json > /tmp/$sa.json
+  confluent iam service-account create $sa --description "lab06 team account" -o json > /tmp/$sa.json
 done
 ORD=$(jq -r .id /tmp/sa-orders-producer.json)
 ANA=$(jq -r .id /tmp/sa-analytics-consumer.json)
@@ -82,8 +82,8 @@ k() { echo "--api-key $(jq -r .api_key /tmp/key-$1.json) --api-secret $(jq -r .a
 
 echo 'SO-1001234:{"status":"READY"}' | confluent kafka topic produce orders.order-status.updated.v1 $(k $ORD) --parse-key --delimiter ":"
 echo 'X:{"x":1}'  | confluent kafka topic produce tracking.item-scan.recorded.v1 $(k $ORD) --parse-key --delimiter ":"
-confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group analytics-lab05 -b
-confluent kafka topic consume customers.customer-journey.v1 $(k $ANA) --group analytics-lab05 -b
+confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group analytics-lab06 -b
+confluent kafka topic consume customers.customer-journey.v1 $(k $ANA) --group analytics-lab06 -b
 confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group other-group -b
 ```
 
@@ -91,7 +91,7 @@ confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group o
 |---|---|
 | orders produce to `orders.` | success |
 | orders produce to `tracking.` | `TOPIC_AUTHORIZATION_FAILED` |
-| analytics consume `orders.` with group `analytics-lab05` | record printed |
+| analytics consume `orders.` with group `analytics-lab06` | record printed |
 | analytics consume `customers.customer-journey.v1` | topic authorization failed |
 | analytics consume with group `other-group` | **group** authorization failed — the classic onboarding error |
 
@@ -113,12 +113,12 @@ confluent iam rbac role-binding create --principal User:$ANA --role DeveloperRea
 
 ---
 
-## Part 2 — RBAC, OAuth with Entra ID and audit log on `cc-std-lab05`
+## Part 2 — RBAC, OAuth with Entra ID and audit log on `cc-std-lab06`
 
 ### 2.1 Standard cluster and RBAC prefix bindings (CLI)
 
 ```bash
-confluent kafka cluster create cc-std-lab05 --cloud azure --region westeurope --type standard -o json | tee /tmp/std.json
+confluent kafka cluster create cc-std-lab06 --cloud azure --region westeurope --type standard -o json | tee /tmp/std.json
 STD=$(jq -r .id /tmp/std.json)
 confluent kafka cluster use $STD
 for t in orders.order-status.updated.v1 sites.queue-length.measured.v1 customers.customer-journey.v1; do confluent kafka topic create $t --partitions 3; done
@@ -153,7 +153,7 @@ API_SP=$(az ad sp create --id $API_APPID --query id -o tsv)
 # Client app = analytics Databricks workload
 ANA_APPID=$(az ad app create --display-name crash-analytics-databricks --query appId -o tsv)
 ANA_SP=$(az ad sp create --id $ANA_APPID --query id -o tsv)
-ANA_SECRET=$(az ad app credential reset --id $ANA_APPID --display-name lab05 --years 1 --query password -o tsv)
+ANA_SECRET=$(az ad app credential reset --id $ANA_APPID --display-name lab06 --years 1 --query password -o tsv)
 
 # Assign the app role DIRECTLY to the workload's service principal
 az rest --method POST --uri https://graph.microsoft.com/v1.0/servicePrincipals/$ANA_SP/appRoleAssignments \
@@ -334,7 +334,7 @@ resource "azuread_app_role_assignment" "analytics_sites_read" {
 
 # ---------- Confluent ----------
 resource "confluent_kafka_cluster" "std" {
-  display_name = "cc-std-lab05"
+  display_name = "cc-std-lab06"
   availability = "SINGLE_ZONE"
   cloud        = "AZURE"
   region       = "westeurope"
@@ -345,7 +345,7 @@ resource "confluent_kafka_cluster" "std" {
 resource "confluent_service_account" "team" {
   for_each     = toset(["orders-producer", "analytics-consumer", "sites-app"])
   display_name = "sa-${each.key}-tf"
-  description  = "lab05 team account (terraform)"
+  description  = "lab06 team account (terraform)"
 }
 
 locals {
@@ -412,7 +412,7 @@ output "token_scope"  { value = "api://crash-kafka-api/.default" }
 
 This block passes `terraform validate` with confluent 2.94.0 and azuread 3.10.0 (checked 2026-11-07); `apply` has not been run.
 
-Topics: add `confluent_kafka_topic` resources with an admin API key (pattern as in module 04), or create them with the CLI. The audit-log key is not worth Terraform for a lab.
+Topics: add `confluent_kafka_topic` resources with an admin API key (pattern as in module 05), or create them with the CLI. The audit-log key is not worth Terraform for a lab.
 
 ### Teardown Part 2
 
@@ -432,24 +432,24 @@ Terraform path: `terraform destroy`.
 
 ## Part 3 — Client quota in Confluent Cloud (`paid-session`)
 
-Run while the module 02 Enterprise cluster exists, from the VM in the VNet. Quotas need Enterprise, Freight or Dedicated.
+Run while the module 03 Enterprise cluster exists, from the VM in the VNet. Quotas need Enterprise, Freight or Dedicated.
 
 ```bash
-ENT=<lkc of cc-ent-lab02>
-confluent iam service-account create sa-analytics-replay --description "lab05 quota test" -o json > sa-replay.json
+ENT=<lkc of cc-ent-lab03>
+confluent iam service-account create sa-analytics-replay --description "lab06 quota test" -o json > sa-replay.json
 REP=$(jq -r .id sa-replay.json)
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:tracking. --prefix
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperWrite --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:tracking. --prefix
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Group:analytics- --prefix
 confluent api-key create --resource $ENT --service-account $REP -o json > key-replay.json
-# client properties replay.properties as in module 02 C1 step 8, with this key
+# client properties replay.properties as in module 03 C1 step 8, with this key
 
 # baseline
 kafka-producer-perf-test.sh --topic tracking.item-scan.recorded.v1 --num-records 50000 --record-size 1000 \
   --throughput -1 --producer.config replay.properties
 
 # 1 MB/s ingress and egress for this principal
-confluent kafka quota create lab05-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT
+confluent kafka quota create lab06-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT
 confluent kafka quota list --cluster $ENT
 sleep 60
 kafka-producer-perf-test.sh --topic tracking.item-scan.recorded.v1 --num-records 50000 --record-size 1000 \
@@ -461,14 +461,14 @@ kafka-consumer-perf-test.sh --bootstrap-server $BOOT_PL:9092 --consumer.config r
 Expected: baseline several MB/s; after the quota about **1 MB/s** (≈1,000 records/s) for both tools, with latency going up — that is throttling, not errors. Add a default quota for everyone else:
 
 ```bash
-confluent kafka quota create lab05-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
+confluent kafka quota create lab06-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
 ```
 
 Terraform equivalent:
 
 ```hcl
 resource "confluent_kafka_client_quota" "analytics_replay" {
-  display_name = "lab05-analytics-replay"
+  display_name = "lab06-analytics-replay"
   description  = "cap analytics backfills"
   throughput {
     ingress_byte_rate = "1048576"
@@ -480,7 +480,7 @@ resource "confluent_kafka_client_quota" "analytics_replay" {
 }
 ```
 
-Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-account delete $REP --force` — then the module 02 teardown removes the cluster.
+Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-account delete $REP --force` — then the module 03 teardown removes the cluster.
 
 ---
 
@@ -531,7 +531,7 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 |---|---|
 | 1 | `confluent api-key delete` for the three team keys; ACLs (`confluent kafka acl delete …`) or keep them on `cc-basic` for later modules; service accounts if not reused |
 | 2 | Standard cluster, identity pool, identity provider, audit key, Entra apps and group (see 2.7 teardown) |
-| 3 | quotas, `sa-analytics-replay` (cluster goes with module 02 teardown) |
+| 3 | quotas, `sa-analytics-replay` (cluster goes with module 03 teardown) |
 | 4 | client quota config on `dc-a` |
 
 ## Cost note
@@ -540,5 +540,5 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 |---|---|
 | Part 1 on Basic | free |
 | Part 2 Standard cluster, ~2 h | 0.75 USD/eCKU-h list → about 1–2 USD |
-| Part 3 | inside the module 02 paid-session budget |
+| Part 3 | inside the module 03 paid-session budget |
 | Entra app registrations, groups | free |

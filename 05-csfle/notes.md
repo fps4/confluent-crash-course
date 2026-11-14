@@ -1,5 +1,5 @@
 ---
-title: 04 — Client-side field-level encryption (CSFLE)
+title: 05 — Client-side field-level encryption (CSFLE)
 subtitle: KEK in Azure Key Vault, DEK Registry, tag-driven rules, rotation, what consumers without keys see, cost, and what it means for Databricks, Flink and Tableflow. Checked against CP and CC docs on 2026-11-07.
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: 07 — Kafka internals (part 2)
+title: 08 — Kafka internals (part 2)
 subtitle: Consumer groups (classic and KIP-848), share groups (KIP-932), transactions, compaction, tiered storage (Confluent and KIP-405), elasticity, geo-replication and Multi-Region Clusters
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: 05b — Confluent Platform security (the on-prem half)
+title: 06b — Confluent Platform security (the on-prem half)
 subtitle: Listeners, mTLS, SASL/OAUTHBEARER with Entra ID, Confluent Server RBAC with MDS, quotas incl. the Cluster Link principal, audit logs. CP 8.x = Kafka 4.x, KRaft only. Checked 2026-11-07.
 ---
 
@@ -117,7 +117,7 @@ Source-initiated link: the reads happen on the on-prem brokers under the **local
 ### 2.8 Encryption at rest on-prem
 
 - Kafka has no built-in at-rest encryption. Use encrypted storage (OpenShift Data Foundation / storage-class encryption, LUKS) and for tiered storage the object store's encryption.
-- For fields that leave the DC: CSFLE (module 04).
+- For fields that leave the DC: CSFLE (module 05).
 
 ---
 

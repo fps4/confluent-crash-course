@@ -1,5 +1,5 @@
 ---
-title: "08 — Lab: data contract + DLQ, broker-side validation, Schema Linking with a context, source-initiated link dc-a → Confluent Cloud"
+title: "01 — Lab: data contract + DLQ, broker-side validation, Schema Linking with a context, source-initiated link dc-a → Confluent Cloud"
 subtitle: Parts A–C local, D cc-basic, E paid-session, F as code. Written 2026-11-07, untested.
 ---
 

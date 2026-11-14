@@ -1,5 +1,5 @@
 ---
-title: 06 — Production streaming systems
+title: 07 — Production streaming systems
 subtitle: From PoC to a shared, mission-critical platform — operating model, GitOps for platform and app changes, multi-tenancy, quotas, observability, chargeback, capacity. Checked against docs on 2026-11-07.
 ---
 
@@ -101,8 +101,8 @@ Source: https://developer.confluent.io/courses/data-streaming-systems/production
 - Non-Java clients (librdkafka) have different defaults (auto-commit, partitioner hashing). Check
   them; a different partitioner breaks key ordering across mixed-language producers.
 - Test failure, not only the happy path: broker restart, rebalance, network partition, multi-node.
-- Data quality rules and migration rules in the schema (see module 03).
-- Broker-side schema validation only checks the schema ID (module 03).
+- Data quality rules and migration rules in the schema (see module 04).
+- Broker-side schema validation only checks the schema ID (module 04).
 - App metrics: consumer lag + commit rate; producer request rate, error rate, latency.
 - Kafka Streams: `num.standby.replicas ≥ 1`, explicit names for processors and state stores.
 
@@ -203,7 +203,7 @@ Worked example (a small operations cluster; assumed inputs [A]):
 |---|---|
 | Peak ingress | 2 MB/s (≈ 1,000 msg/s × 2 KB) |
 | Replication | RF 3 in DC-A + observers 2 in DC-B (MRC) → 5 copies |
-| Retention local | 7 days (MRC does not support tiered storage — module 07) |
+| Retention local | 7 days (MRC does not support tiered storage — module 08) |
 | Consumers | average fan-out 6 (apps + link) |
 
 | Quantity | Formula | Result |

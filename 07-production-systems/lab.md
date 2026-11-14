@@ -1,5 +1,5 @@
 ---
-title: 06 — Lab — Production streaming systems
+title: 07 — Lab — Production streaming systems
 subtitle: A "no schema, no topic" golden Terraform module, a GitHub Actions CI sketch, quotas, lag monitoring, and the CFK/ArgoCD equivalent
 ---
 
@@ -19,11 +19,11 @@ Uses `../00-lab-setup/` (`local` dc-a, `cc-basic`; optional `cc-paid` Dedicated 
 paid session for a real CC quota). The three PII-free example topics in `cc-basic` are owned by
 `00-lab-setup`, so the golden module creates two **new** data products:
 `orders.location-assignment.changed.v1` (C1) and `sites.queue-length.forecast.v1` (C2).
-The PII schema for the negative test comes from `../03-stream-governance/schemas/`.
+The PII schema for the negative test comes from `../04-stream-governance/schemas/`.
 
 # Prerequisites
 
-- Lab 03 Part B understood (catalog qualified names, tags).
+- Lab 04 Part B understood (catalog qualified names, tags).
 - `confluent` CLI v4.x, Terraform ≥ 1.6, `jq`, `conftest` (optional), Docker.
 - A Cloud API key for `sa-crash-admin` in `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`.
 - For step 4 (CC part): a Cloud API key with **MetricsViewer** (a cluster-scoped key gives an auth error).
@@ -43,11 +43,11 @@ Doing it by hand shows how many steps a team would skip:
 
 ```bash
 confluent environment use $ENV_ID && confluent kafka cluster use $CLUSTER_ID
-confluent iam service-account create sa-orders-producer --description "lab06 producer" -o json | tee /tmp/sa-p.json
-confluent iam service-account create sa-analytics-consumer       --description "lab06 consumer" -o json | tee /tmp/sa-c.json
+confluent iam service-account create sa-orders-producer --description "lab07 producer" -o json | tee /tmp/sa-p.json
+confluent iam service-account create sa-analytics-consumer       --description "lab07 consumer" -o json | tee /tmp/sa-c.json
 P=$(jq -r .id /tmp/sa-p.json); C=$(jq -r .id /tmp/sa-c.json)
 
-# 1 schema first ("no schema, no topic"), 2 topic, 3 tags/owner (lab 03 B4), 4 role bindings:
+# 1 schema first ("no schema, no topic"), 2 topic, 3 tags/owner (lab 04 B4), 4 role bindings:
 confluent iam rbac role-binding create --principal User:$P --role DeveloperWrite \
   --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID \
   --resource Topic:orders.order-status.updated.v1
@@ -68,7 +68,7 @@ step 1b, or let Terraform import them.
 
 ## 1b. The module
 
-Layout (create under `06-production-systems/terraform/`):
+Layout (create under `07-production-systems/terraform/`):
 
 ```
 terraform/
@@ -337,7 +337,7 @@ data "confluent_schema_registry_cluster" "this" {
 resource "confluent_service_account" "producer" { display_name = "sa-orders-producer" }
 resource "confluent_service_account" "consumer" { display_name = "sa-analytics-consumer" }
 
-# Tag definitions are platform-owned; lab 03 creates PII/Public/Confidential/DataProduct.
+# Tag definitions are platform-owned; lab 04 creates PII/Public/Confidential/DataProduct.
 # Add Internal and Restricted here if they do not exist yet.
 resource "confluent_tag" "extra" {
   for_each = toset(["Internal", "Restricted"])
@@ -432,13 +432,13 @@ module "queue_forecast" {
 Run and try to break it:
 
 ```bash
-cd 06-production-systems/terraform/live/cc-basic
+cd 07-production-systems/terraform/live/cc-basic
 terraform init && terraform plan -out tf.plan && terraform apply tf.plan
 ```
 
 Expected: 2 topics, 2 schemas, 2 subject configs, 4 tag bindings, 2 entity-attribute resources,
 10 role bindings, 2 service accounts, 2 tags. Tag definitions `Public`, `Confidential`,
-`DataProduct` must exist (lab 03, or add them to `confluent_tag.extra`).
+`DataProduct` must exist (lab 04, or add them to `confluent_tag.extra`).
 
 Negative tests (each must fail at `plan`):
 
@@ -446,7 +446,7 @@ Negative tests (each must fail at `plan`):
 |---|---|
 | `name = "OrderStatus"` | naming validation |
 | `schema_file = "missing.avsc"` | "No schema, no topic" |
-| module with `schema_file = "${path.module}/../../../../03-stream-governance/schemas/customer-journey.avsc"` and `classification = "C1"` | PII precondition |
+| module with `schema_file = "${path.module}/../../../../04-stream-governance/schemas/customer-journey.avsc"` and `classification = "C1"` | PII precondition |
 | `partitions = 64` | partition limit |
 
 # 2. CI sketch — GitHub Actions
@@ -665,7 +665,7 @@ Datadog do) [V].
 
 ## 4b. Confluent Cloud, Metrics API
 
-Produce and consume a little on `cc-basic` (lab 03 B6), with consumer group `analytics-lab06`, then:
+Produce and consume a little on `cc-basic` (lab 04 B6), with consumer group `analytics-lab07`, then:
 
 ```bash
 curl -s -u "$METRICS_KEY:$METRICS_SECRET" -H 'Content-Type: application/json' \
@@ -684,7 +684,7 @@ minutes delay. For Prometheus/Datadog scraping use
 Cluster-link lag, when you have a link (module on hybrid): metric
 `io.confluent.kafka.server/cluster_link_mirror_topic_offset_lag` (preview) [V].
 
-CLI shortcut: `confluent kafka consumer group lag list analytics-lab06` [V].
+CLI shortcut: `confluent kafka consumer group lag list analytics-lab07` [V].
 
 # 5. Same data product on-prem — CFK CRs + ArgoCD (written only)
 
@@ -796,7 +796,7 @@ ArgoCD PostSync hook.
 # Teardown
 
 ```bash
-cd 06-production-systems/terraform/live/cc-basic && terraform destroy
+cd 07-production-systems/terraform/live/cc-basic && terraform destroy
 # CLI-created items from step 1 (if any)
 confluent iam service-account delete $(jq -r .id /tmp/sa-p.json) --force
 confluent iam service-account delete $(jq -r .id /tmp/sa-c.json) --force

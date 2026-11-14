@@ -1,5 +1,5 @@
 ---
-title: 08 — Hybrid linking and data contracts
+title: 01 — Hybrid linking and data contracts
 subtitle: Source-initiated Cluster Linking CP→CC, Schema Linking with contexts, broker-side schema ID validation. Built from current docs on 2026-11-07 (no course exists). Data contracts in notes-data-contracts.md.
 ---
 

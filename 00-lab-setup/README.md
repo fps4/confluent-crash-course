@@ -12,7 +12,7 @@ Three environments, from free to billable:
 |---|---|---|---|
 | `local` | Docker Compose: two single-node KRaft clusters **`dc-a`** and **`dc-b`** (Confluent Server 8.4.0), one Schema Registry each (**`sr-a`**, **`sr-b`**), optional Kafka Connect worker for MirrorMaker 2 | Cluster Linking CP↔CP, failover/failback, MM2, Schema Linking CP→CP, data contracts with rules, broker-side schema ID validation | Free (developer licence, see below) |
 | `cc-basic` | Confluent Cloud environment **`crash-course`**, Basic cluster **`cc-basic`** on Azure **`westeurope`**, Schema Registry (Stream Governance **Essentials**), service account **`sa-crash-admin`** with API keys | Cloud clients, Schema Linking CP→CC, governance basics, Terraform practice | Near zero: Basic's first eCKU is free; you pay data in/out and storage. Trial credits cover it |
-| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) and/or Enterprise cluster **`cc-ent`** (always private, Azure PrivateLink Attachment) in the same environment. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC as Cluster Linking destination, CC broker-side validation, Private Link (module 02) | Billable per hour. See "Cost" |
+| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) and/or Enterprise cluster **`cc-ent`** (always private, Azure PrivateLink Attachment) in the same environment. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC as Cluster Linking destination, CC broker-side validation, Private Link (module 03) | Billable per hour. See "Cost" |
 
 Versions pinned on 2026-11-07:
 
@@ -68,7 +68,7 @@ export LAB=~/labs/confluent-crash-course/00-lab-setup
 cd "$LAB"
 
 docker compose up -d                    # dc-a, sr-a, dc-b, sr-b
-docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2 (module 01 part C only)
+docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2 (module 02 part C only)
 docker compose ps                       # dc-a and dc-b should be "healthy"
 ```
 
@@ -122,7 +122,7 @@ stacks.
 ## Optional: Control Center (profile `c3`)
 
 A web UI for both clusters: topics, consumer groups and lag, cluster links and mirror topics.
-Useful for watching module 01's failover. No lab depends on it; every "Expected" is CLI output.
+Useful for watching module 02's failover. No lab depends on it; every "Expected" is CLI output.
 
 ```bash
 cd "$LAB" && docker compose --profile mm2 --profile c3 up -d
@@ -177,9 +177,9 @@ talking to; `docker context show` does the same.
 
 ## Next
 
-The local stack is all module 01 needs for parts A–C, and all module 08 needs for its local part.
+The local stack is all module 02 needs for parts A–C, and all module 01 needs for its local part.
 The suggested order in the [course README](../README.md#modules--suggested-order) starts with
-[08](../08-linking-and-contracts/lab.md), then [01](../01-hybrid-multicloud/lab.md). Set up
+[08](../01-linking-and-contracts/lab.md), then [01](../02-hybrid-multicloud/lab.md). Set up
 `cc-basic` (below) when a lab first asks for it.
 
 # `cc-basic` — create with Terraform
@@ -242,7 +242,7 @@ data source pointing at `00-lab-setup/terraform/terraform.tfstate`.
 ```bash
 cd "$LAB/terraform"
 terraform apply -var enable_paid_dedicated=true                 # cc-paid, Dedicated 1 CKU, public
-terraform apply -var enable_paid_enterprise_private=true        # cc-ent + PrivateLink Attachment (module 02)
+terraform apply -var enable_paid_enterprise_private=true        # cc-ent + PrivateLink Attachment (module 03)
 # ... labs ...
 terraform apply -var enable_paid_dedicated=false -var enable_paid_enterprise_private=false
 ```
@@ -254,7 +254,7 @@ Which cluster for which lab:
 | Source-initiated link from the laptop (`dc-a` → CC) | `cc-paid` (Dedicated, public) | CP → CC needs a Dedicated or privately networked Enterprise destination. Enterprise is always private, so a laptop can only reach it through an Azure private endpoint + VPN. Dedicated with public endpoints works over the internet |
 | CC as Cluster Linking destination | `cc-paid` or `cc-ent` | Only Dedicated, Enterprise (and Freight on AWS) can be destinations |
 | Broker-side schema ID validation in CC | `cc-paid` | Dedicated only |
-| Private Link | `cc-ent` | Cheaper and faster to create than a Dedicated private network; Azure side is in module 02 |
+| Private Link | `cc-ent` | Cheaper and faster to create than a Dedicated private network; Azure side is in module 03 |
 
 Rules for the day: create in the morning, check the Billing page before you stop, destroy before
 you sleep. Dedicated provisioning can take tens of minutes or longer. [V]

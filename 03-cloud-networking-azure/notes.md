@@ -1,5 +1,5 @@
 ---
-title: 02 — Confluent Cloud networking, rewritten for Azure
+title: 03 — Confluent Cloud networking, rewritten for Azure
 subtitle: Public endpoints, VNet peering, Private Link (Dedicated vs Enterprise gateway), ExpressRoute, DNS, cost, and why on-prem brokers are hard to expose. Checked against docs on 2026-11-07.
 ---
 
@@ -256,7 +256,7 @@ OpenShift), and wants to serve data/AI consumers in Azure (Databricks, AI apps o
 touching the operational clusters. Identity is Entra ID; REST APIs go through an API gateway.
 
 - **Target**: on-prem CP → source-initiated Cluster Link → **ExpressRoute private peering** → private endpoint in the hub → **Enterprise** cluster in `westeurope` via the **ingress PrivateLink Gateway**. Data & analytics and AI spokes reach the same private endpoint through hub peering. No public endpoints on the cluster.
-- **Why Enterprise first**: provisions in minutes, elastic, one gateway covers Kafka + Schema Registry + Flink for the environment. Move to Dedicated only if a Dedicated-only feature is required (for example broker-side schema validation in CC, see [module 03](../03-stream-governance/notes.md)) or scale passes the Azure Private Link eCKU cap **[V]**.
+- **Why Enterprise first**: provisions in minutes, elastic, one gateway covers Kafka + Schema Registry + Flink for the environment. Move to Dedicated only if a Dedicated-only feature is required (for example broker-side schema validation in CC, see [module 04](../04-stream-governance/notes.md)) or scale passes the Azure Private Link eCKU cap **[V]**.
 - **Environments**: one gateway per environment and region. If you split `prod` and `non-prod` environments (you should), that is two gateways and two DNS zones. Plan the 10-endpoint-per-gateway limit if each spoke wants its own endpoint; usually one endpoint in the hub is enough.
 - **DNS**: Azure DNS Private Resolver in the hub; on-prem DNS conditional forwarder for the access-point zones. Most organisations already use this pattern for Azure PaaS private endpoints (Storage, Key Vault, Databricks), so reuse the existing DNS design rather than invent one.
 - **Firewall**: the link is a long-lived outbound TCP flow on 9092 (and 443 for REST/SR). Ask the network team for an FQDN-based rule and idle timeouts longer than Kafka's keepalive behaviour.
