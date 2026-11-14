@@ -105,13 +105,13 @@ resource "confluent_api_key" "sa_crash_admin_sr" {
   ]
 }
 
-# Shared example topics on cc-basic (PII-free). PII topic `customers.customer-journey.v1`
+# Shared example topics on cc-basic (PII-free). PII topic `customers.subscriber-profile.v1`
 # is created by the CSFLE / governance modules, not here.
 locals {
   basic_topics = {
-    "orders.order-status.updated.v1"        = 3
-    "tracking.item-scan.recorded.v1"        = 3
-    "sites.queue-length.measured.v1"        = 1
+    "billing.call-record.created.v1" = 3
+    "noc.cell-alarm.raised.v1"       = 3
+    "network.cell-load.measured.v1"  = 1
   }
 }
 

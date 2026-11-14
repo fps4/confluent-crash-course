@@ -1,11 +1,13 @@
 ---
 title: 05 — Lab — encrypt customer PII with a KEK in Azure Key Vault
-subtitle: CSFLE on customers.customer-journey.v1. Consumers with and without key access, two checks (Confluent RBAC on the KEK, Azure RBAC on the key), rotation. Confluent Cloud path first, local CP path as a variant.
+subtitle: CSFLE on customers.subscriber-profile.v1. Consumers with and without key access, two checks (Confluent RBAC on the KEK, Azure RBAC on the key), rotation. Confluent Cloud path first, local CP path as a variant.
 ---
+
+> **Video:** episode 5, "Encrypting a field nobody else should read" (coming soon). The video gives the reasoning; this lab lets you see it happen.
 
 ## Goal
 
-1. Register a schema for `customers.customer-journey.v1` with two fields tagged `PII` and an ENCRYPT rule that uses a KEK in Azure Key Vault.
+1. Register a schema for `customers.subscriber-profile.v1` with four fields tagged `PII` and an ENCRYPT rule that uses a KEK in Azure Key Vault.
 2. Produce records; see ciphertext in the Console and with a raw consumer.
 3. Consume with: (A) full access → plaintext; (B) Key Vault access but no Confluent RBAC on the KEK → ciphertext; (C) RBAC on the KEK but no Key Vault access → ciphertext.
 4. Look inside the DEK Registry; rotate the Key Vault key and see why versioned key ids matter.
@@ -27,11 +29,12 @@ Azure: one resource group with a Key Vault (Azure RBAC mode), one RSA key, and t
 - `az` CLI logged in; rights to create Key Vault and role assignments (Owner or User Access Administrator on the resource group) and app registrations.
 - Java 17+ and **Confluent Platform 8.x tools** with the Avro console producer/consumer. Easiest: run them inside the `dc-a` Schema Registry container from `00-lab-setup` (it ships `kafka-avro-console-producer`). Check the Azure encryption jar is present:
   ```bash
-  docker compose -f ../00-lab-setup/docker-compose.yml exec <dc-a-schema-registry-service> \
+  docker compose -f $LAB/docker-compose.yml exec sr-a \
     bash -c 'ls /usr/share/java/schema-registry /usr/share/java/kafka-serde-tools 2>/dev/null | grep -i encryption'
   ```
   Expected: `kafka-schema-registry-client-encryption-azure-*.jar` among others **[V]**. If missing, download the CP 8.x tarball and use its `bin/` instead.
 - `jq`, `curl`.
+- Start clean, because module 04 created the same topic: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
 
 ---
 
@@ -100,7 +103,7 @@ P=$(jq -r .id /tmp/sa-csfle-producer.json); R=$(jq -r .id /tmp/sa-csfle-reader.j
 Kafka access: Basic clusters do **not** support RBAC on Kafka resources, so use ACLs for the topic (RBAC works on Schema Registry, which is environment-level):
 
 ```bash
-confluent kafka topic create customers.customer-journey.v1 --partitions 3
+confluent kafka topic create customers.subscriber-profile.v1 --partitions 3
 confluent kafka acl create --allow --service-account $P --operations write,describe --topic customers. --prefix
 for s in $R $N; do
   confluent kafka acl create --allow --service-account $s --operations read,describe --topic customers. --prefix
@@ -115,7 +118,7 @@ done
 Schema Registry RBAC — subjects for everyone, KEK only for producer and reader:
 
 ```bash
-SUBJ=customers.customer-journey.v1-value
+SUBJ=customers.subscriber-profile.v1-value
 confluent iam rbac role-binding create --principal User:$P --role DeveloperWrite --environment $CSFLE_ENV --schema-registry-cluster $SR_ID --resource "Subject:$SUBJ"
 confluent iam rbac role-binding create --principal User:$P --role DeveloperRead  --environment $CSFLE_ENV --schema-registry-cluster $SR_ID --resource "Subject:$SUBJ"
 confluent iam rbac role-binding create --principal User:$R --role DeveloperRead  --environment $CSFLE_ENV --schema-registry-cluster $SR_ID --resource "Subject:$SUBJ"
@@ -145,27 +148,28 @@ Expected: tag `PII` created; KEK `kek-customers` with `kmsType: azure-kms`, `sha
 ### 1.3 Schema with tags and the ENCRYPT rule
 
 ```bash
-cat > /tmp/customer-journey.avsc <<'EOF'
+cat > /tmp/subscriber-profile.avsc <<'EOF'
 {
   "type": "record",
-  "name": "CustomerJourney",
+  "name": "SubscriberProfile",
   "namespace": "com.example.customers",
+  "doc": "One subscriber's profile. Synthetic personal data for the governance and encryption labs.",
   "fields": [
-    {"name": "journey_id",    "type": "string"},
-    {"name": "customer_key",  "type": "string", "doc": "pseudonymous id"},
-    {"name": "customer_name", "type": "string", "confluent:tags": ["PII"]},
-    {"name": "national_id",   "type": "string", "confluent:tags": ["PII"], "doc": "national ID-like reference"},
-    {"name": "order_id",      "type": "string"},
-    {"name": "location",      "type": "string"},
-    {"name": "event_time",    "type": {"type": "long", "logicalType": "timestamp-millis"}}
+    {"name": "subscriberRef", "type": "string", "doc": "Pseudonymous reference, e.g. SUB-1001601"},
+    {"name": "customerName",  "type": "string", "confluent:tags": ["PII"]},
+    {"name": "msisdn",        "type": "string", "doc": "Phone number", "confluent:tags": ["PII"]},
+    {"name": "email",         "type": "string", "confluent:tags": ["PII"]},
+    {"name": "nationalId",    "type": "string", "confluent:tags": ["PII"]},
+    {"name": "plan",          "type": "string", "doc": "PREPAID|POSTPAID|BUSINESS"},
+    {"name": "eventTime",     "type": {"type": "long", "logicalType": "timestamp-millis"}}
   ]
 }
 EOF
 
-jq -n --arg schema "$(cat /tmp/customer-journey.avsc)" --arg kek "$KEK_URI" '{
+jq -n --arg schema "$(cat /tmp/subscriber-profile.avsc)" --arg kek "$KEK_URI" '{
   schemaType: "AVRO",
   schema: $schema,
-  metadata: {properties: {owner: "customers-team", classification: "confidential"}},
+  metadata: {properties: {owner: "care-team", classification: "confidential"}},
   ruleSet: {domainRules: [{
     name: "encrypt-pii", kind: "TRANSFORM", type: "ENCRYPT", mode: "WRITEREAD",
     tags: ["PII"],
@@ -202,7 +206,7 @@ mk $P /tmp/producer.properties; mk $R /tmp/reader.properties; mk $N /tmp/nokek.p
 Producer (run where the CP 8.x tools are; copy the `/tmp` files into the container if you use it):
 
 ```bash
-kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.customer-journey.v1 \
+kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
   --producer.config /tmp/producer.properties \
   --reader-property schema.registry.url=$SR_URL \
   --reader-property basic.auth.credentials.source=USER_INFO \
@@ -218,11 +222,11 @@ kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.customer-
 Paste, one per line:
 
 ```json
-{"journey_id":"j-001","customer_key":"pk-7f3a","customer_name":"Anna de Vries","national_id":"ID1234567","order_id":"SO-1001234","location":"ZONE-A2","event_time":1762508400000}
-{"journey_id":"j-002","customer_key":"pk-91bc","customer_name":"Ravi Kumar","national_id":"ID9876543","order_id":"SO-1000645","location":"ZONE-B4","event_time":1762508460000}
+{"subscriberRef":"SUB-1001601","customerName":"Anna de Vries","msisdn":"+31612345678","email":"anna@example.org","nationalId":"ID1234567","plan":"POSTPAID","eventTime":1762499000000}
+{"subscriberRef":"SUB-1000645","customerName":"Ravi Kumar","msisdn":"+31687654321","email":"ravi@example.org","nationalId":"ID9876543","plan":"PREPAID","eventTime":1762499060000}
 ```
 
-Expected log line, once: `Registered dek for kek kek-customers, subject customers.customer-journey.v1-value` (wording may differ). Ctrl-D to finish.
+Expected log line, once: `Registered dek for kek kek-customers, subject customers.subscriber-profile.v1-value` (wording may differ). Ctrl-D to finish.
 
 ### 1.5 Consume — three cases plus raw
 
@@ -230,7 +234,7 @@ Common part:
 
 ```bash
 consume() { # $1=props $2=sa $3=sp json $4=group
-kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.customer-journey.v1 \
+kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
   --consumer.config $1 --group $4 --from-beginning --max-messages 2 \
   --formatter-property schema.registry.url=$SR_URL \
   --formatter-property basic.auth.credentials.source=USER_INFO \
@@ -243,15 +247,15 @@ kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.customer-
 
 | Case | Command | Expected |
 |---|---|---|
-| A — full access | `consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a` | `customer_name: "Anna de Vries"`, `national_id: "ID1234567"` in plaintext |
+| A — full access | `consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a` | `customerName: "Anna de Vries"`, `nationalId: "ID1234567"` in plaintext |
 | B — Key Vault yes, KEK RBAC no | `consume /tmp/nokek.properties $N /tmp/sp-reader.json lab05-b` | record printed, PII fields are base64 ciphertext; log shows a 403 from the DEK Registry |
 | C — KEK RBAC yes, Key Vault no | `consume /tmp/reader.properties $R /tmp/sp-nokv.json lab05-c` | PII fields ciphertext; log shows a Key Vault `Forbidden` on decrypt |
 | D — no rule executor credentials at all | same as A without the three `rule.executors…` lines | default Azure credential chain fails → ciphertext (or uses your `az login` identity if the chain finds it — interesting to observe) |
-| Raw | `kafka-console-consumer --bootstrap-server $BOOT --consumer.config /tmp/reader.properties --topic customers.customer-journey.v1 --from-beginning --max-messages 2` | Avro bytes; `SO-1001234`, `ZONE-A2` visible, names not visible |
+| Raw | `kafka-console-consumer --bootstrap-server $BOOT --consumer.config /tmp/reader.properties --topic customers.subscriber-profile.v1 --from-beginning --max-messages 2` | Avro bytes; `SUB-1001601`, `POSTPAID` visible, names not visible |
 
-Also open the topic in the Confluent Cloud Console → Messages: `customer_name` shows ciphertext. The Console is just another client without the key.
+Also open the topic in the Confluent Cloud Console → Messages: `customerName` shows ciphertext. The Console is just another client without the key.
 
-Optional: `confluent kafka topic consume customers.customer-journey.v1 -b --value-format avro --schema-registry-endpoint $SR_URL ...` — note whether the Go-based CLI applies the rule or shows ciphertext **[V]**.
+Optional: `confluent kafka topic consume customers.subscriber-profile.v1 -b --value-format avro --schema-registry-endpoint $SR_URL ...` — note whether the Go-based CLI applies the rule or shows ciphertext **[V]**.
 
 Switch case B's read failure mode to `ERROR` to see the difference: register a new schema version with `"onFailure": "ERROR,ERROR"`, rerun case B, expect the consumer to stop with a serialization exception. Set it back to `ERROR,NONE` after.
 
@@ -452,7 +456,7 @@ resource "confluent_api_key" "admin_sr" {
 resource "confluent_kafka_topic" "pj" {
   kafka_cluster { id = confluent_kafka_cluster.basic.id }
   rest_endpoint    = confluent_kafka_cluster.basic.rest_endpoint
-  topic_name       = "customers.customer-journey.v1"
+  topic_name       = "customers.subscriber-profile.v1"
   partitions_count = 3
   credentials {
     key    = confluent_api_key.admin_kafka.id
@@ -565,7 +569,7 @@ resource "confluent_schema" "pj" {
   }
   subject_name = local.subj
   format       = "AVRO"
-  schema       = file("${path.module}/customer-journey.avsc")   # same file as Part 1.3
+  schema       = file("${path.module}/subscriber-profile.avsc")   # same file as Part 1.3
   ruleset {
     domain_rules {
       name       = "encrypt-pii"
@@ -636,16 +640,17 @@ Add to the `dc-a` Schema Registry service, as a compose override file in your ow
 
 ```yaml
 services:
-  <dc-a-schema-registry-service>:
+  sr-a:
     environment:
-      SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS: "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension,io.confluent.dekregistry.DekRegistryResourceExtension"
+      # replaces the base list: keep RuleSet + SchemaExporter (module 01's Schema Linking), add DekRegistry
+      SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS: "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension,io.confluent.schema.exporter.SchemaExporterResourceExtension,io.confluent.dekregistry.DekRegistryResourceExtension"
       SCHEMA_REGISTRY_CONFLUENT_LICENSE: "${CP_LICENSE:-}"               # [V] empty = trial; add-on behaviour in trial is undocumented
       SCHEMA_REGISTRY_CONFLUENT_LICENSE_ADDON_CSFLE: "${CP_LICENSE:-}"
 ```
 
 ```bash
-docker compose -f ../00-lab-setup/docker-compose.yml -f override.yml up -d <dc-a-schema-registry-service>
-curl -s http://localhost:<dc-a SR port>/dek-registry/v1/keks
+docker compose -f $LAB/docker-compose.yml -f override.yml up -d sr-a
+curl -s http://localhost:8081/dek-registry/v1/keks
 ```
 
 Expected: `[]` (the DEK Registry endpoint exists). A 404 means the extension did not load — check the SR logs for a licence message. If the add-on refuses to run without a licence, use the Confluent Cloud path and note it as a finding.
@@ -654,7 +659,7 @@ Then repeat 1.3–1.5 against the local SR (no auth), with either:
 - **Azure Key Vault**: same rule and credentials as above — the client talks to Key Vault directly; the local DEK Registry never needs Azure access. This mirrors the on-prem producer in the target design.
 - **Local KMS (offline)**: rule params `"encrypt.kms.type": "local-kms"`, `"encrypt.kms.key.id": "lab-key"` **[V]**, and client property `rule.executors._default_.param.secret=$(openssl rand -base64 16)` (or env `LOCAL_SECRET`). Testing only.
 
-Optional, connects to module 04/Cluster Linking: if `dc-b` has a Schema Registry and you run a schema exporter from `dc-a` to `dc-b`, check whether the DEK appears in `dc-b`'s `/dek-registry/v1/keks/kek-customers/deks` — the CC docs say Schema Linking copies DEKs and KEK pointers.
+Optional, connects to module 01 (Schema Linking): if `dc-b` has a Schema Registry and you run a schema exporter from `dc-a` to `dc-b`, check whether the DEK appears in `dc-b`'s `/dek-registry/v1/keks/kek-customers/deks` — the CC docs say Schema Linking copies DEKs and KEK pointers.
 
 ---
 
@@ -663,7 +668,7 @@ Optional, connects to module 04/Cluster Linking: if `dc-b` has a Schema Registry
 - [ ] `latest` schema shows the `encrypt-pii` rule and PII tags.
 - [ ] DEK exists with `encryptedKeyMaterial` only.
 - [ ] Case A plaintext; cases B, C, D ciphertext; raw consumer shows no names.
-- [ ] Console shows ciphertext for `customer_name`.
+- [ ] Console shows ciphertext for `customerName`.
 - [ ] Removing the reader's Key Vault role → new consumer sees ciphertext.
 - [ ] Key rotation with a versioned key id → still plaintext.
 

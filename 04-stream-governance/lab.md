@@ -3,6 +3,8 @@ title: 04 — Lab — Stream Governance
 subtitle: Schemas with tags and metadata, compatibility gates, broker-side validation, catalog search, lineage, Data Portal — CLI and curl first, then Terraform
 ---
 
+> **Video:** episode 4, "Governance for teams that don't know each other" (coming soon). The video gives the reasoning; this lab lets you see it happen.
+
 **[V]** = check against current docs or your package before you rely on it.
 
 # Goal
@@ -11,7 +13,7 @@ End state, built twice (CLI/curl, then Terraform):
 
 | Item | Value |
 |---|---|
-| Topics | `orders.order-status.updated.v1` (C1, no PII), `customers.customer-journey.v1` (C3, PII) |
+| Topics | `billing.call-record.created.v1` (C1, no PII), `customers.subscriber-profile.v1` (C3, PII) |
 | Subjects | `<topic>-value`, Avro, `BACKWARD_TRANSITIVE` |
 | Schema metadata | `owner`, `classification`, `major_version` properties |
 | Tags | `PII` on fields (inline), `Public` / `Confidential` on topics, `DataProduct` on both topics |
@@ -37,6 +39,7 @@ helper functions (`a`, `sra`), ports and Terraform outputs.
 - `curl`, `jq`, Docker, Terraform ≥ 1.6, and the Cloud API key from `00-lab-setup` step 3 in
   `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`.
 - `00-lab-setup` applied: `local` running, `cc-basic` created, outputs available.
+- Start clean, because module 01 created the same topics: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
 
 ```bash
 # --- local (from 00-lab-setup) ---
@@ -54,45 +57,47 @@ export SR_AUTH="$(terraform output -raw sa_sr_api_key):$(terraform output -raw s
 cd -
 ```
 
-The base already created `orders.order-status.updated.v1` in `cc-basic` (PII-free topics are
-owned by `00-lab-setup`). This lab creates `customers.customer-journey.v1` and adds schemas,
+The base already created `billing.call-record.created.v1` in `cc-basic` (PII-free topics are
+owned by `00-lab-setup`). This lab creates `customers.subscriber-profile.v1` and adds schemas,
 tags and catalog attributes to both.
 
 Create the two schema files once (used by every part).
 
-`schemas/order-status-updated.avsc`:
+`schemas/call-record-created.avsc`:
 
 ```json
 {
   "type": "record",
-  "name": "OrderStatusUpdated",
-  "namespace": "com.example.orders",
-  "doc": "A change of the operational status of one order.",
+  "name": "CallRecordCreated",
+  "namespace": "com.example.billing",
+  "doc": "One call detail record: a call, a text or a data session. No direct identifiers; the key is a pseudonymous subscriber reference.",
   "fields": [
-    {"name": "orderId", "type": "string", "doc": "Order id, e.g. SO-1001234"},
-    {"name": "status", "type": {"type": "enum", "name": "OrderStatus",
-      "symbols": ["CREATED", "CONFIRMED", "DELAYED", "LOCATION_CHANGE", "READY", "DISPATCHED", "CANCELLED", "UNKNOWN"],
-      "default": "UNKNOWN"}, "doc": "Operational status"},
-    {"name": "location", "type": ["null", "string"], "default": null, "doc": "Location, if assigned, e.g. ZONE-D7"},
-    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the status changed"}
+    {"name": "recordId", "type": "string", "doc": "CDR id, e.g. CDR-1001601"},
+    {"name": "recordType", "type": "string", "doc": "VOICE|SMS|DATA|ROAMING_VOICE|ROAMING_DATA|UNKNOWN"},
+    {"name": "cellId", "type": "string", "doc": "Serving cell, e.g. CELL-0412"},
+    {"name": "durationSec", "type": "long", "doc": "Seconds for a call or a session; 0 for a text"},
+    {"name": "startTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the call or session started"},
+    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the record was created"}
   ]
 }
 ```
 
-`schemas/customer-journey.avsc` (synthetic PII, for the tag demo):
+`schemas/subscriber-profile.avsc` (synthetic PII, for the tag demo):
 
 ```json
 {
   "type": "record",
-  "name": "CustomerJourney",
+  "name": "SubscriberProfile",
   "namespace": "com.example.customers",
-  "doc": "One customer's progress through a site. Contains personal data.",
+  "doc": "One subscriber's profile. Synthetic personal data for the governance and encryption labs.",
   "fields": [
-    {"name": "journeyId", "type": "string", "doc": "Pseudonymous journey id"},
-    {"name": "email", "type": ["null", "string"], "default": null, "doc": "Contact email", "confluent:tags": ["PII"]},
-    {"name": "customerCardHash", "type": "string", "doc": "Hash of the customer card number", "confluent:tags": ["PII"]},
-    {"name": "location", "type": "string", "doc": "e.g. ZONE-D7, COUNTER-2"},
-    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "Scan time"}
+    {"name": "subscriberRef", "type": "string", "doc": "Pseudonymous reference, e.g. SUB-1001601"},
+    {"name": "customerName", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "msisdn", "type": "string", "doc": "Phone number", "confluent:tags": ["PII"]},
+    {"name": "email", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "nationalId", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "plan", "type": "string", "doc": "PREPAID|POSTPAID|BUSINESS"},
+    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}}
   ]
 }
 ```
@@ -102,37 +107,37 @@ Create the two schema files once (used by every part).
 ## A1. Create topics and register schemas with metadata
 
 ```bash
-for t in orders.order-status.updated.v1 customers.customer-journey.v1; do
+for t in billing.call-record.created.v1 customers.subscriber-profile.v1; do
   a kafka-topics --bootstrap-server dc-a:29092 --create --topic $t --partitions 3 --replication-factor 1
 done
 
 # set compatibility first, then register
-for s in orders.order-status.updated.v1-value customers.customer-journey.v1-value; do
+for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-value; do
   curl -s -X PUT -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
     --data '{"compatibility":"BACKWARD_TRANSITIVE"}' $A_SR/config/$s | jq .
 done
 
-jq -n --rawfile s schemas/order-status-updated.avsc \
+jq -n --rawfile s schemas/call-record-created.avsc \
   '{schemaType:"AVRO", schema:$s,
-    metadata:{properties:{owner:"orders-team", classification:"C1", major_version:"1"}}}' \
+    metadata:{properties:{owner:"billing-team", classification:"C1", major_version:"1"}}}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
-    --data @- $A_SR/subjects/orders.order-status.updated.v1-value/versions | jq .
+    --data @- $A_SR/subjects/billing.call-record.created.v1-value/versions | jq .
 
-jq -n --rawfile s schemas/customer-journey.avsc \
+jq -n --rawfile s schemas/subscriber-profile.avsc \
   '{schemaType:"AVRO", schema:$s,
-    metadata:{properties:{owner:"customers-team", classification:"C3", major_version:"1"}}}' \
+    metadata:{properties:{owner:"care-team", classification:"C3", major_version:"1"}}}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
-    --data @- $A_SR/subjects/customers.customer-journey.v1-value/versions | jq .
+    --data @- $A_SR/subjects/customers.subscriber-profile.v1-value/versions | jq .
 ```
 
 Expected: `{"id": 1}` and `{"id": 2}` (IDs may differ). Read it back and see the metadata:
 
 ```bash
-curl -s $A_SR/subjects/customers.customer-journey.v1-value/versions/latest | jq '{id, version, metadata}'
+curl -s $A_SR/subjects/customers.subscriber-profile.v1-value/versions/latest | jq '{id, version, metadata}'
 ```
 
 Expected: `metadata.properties` shows owner/classification; `metadata.tags` may show
-`{"CustomerJourney.email":["PII"], ...}` derived from the inline tags [V: tag extraction depends
+`{"SubscriberProfile.email":["PII"], ...}` derived from the inline tags [V: tag extraction depends
 on SR version].
 
 ## A2. Compatibility gate (what CI will call)
@@ -140,12 +145,12 @@ on SR version].
 A compatible change — add an optional field with a default:
 
 ```bash
-jq '.fields += [{"name":"locationChangeReason","type":["null","string"],"default":null,"doc":"Why the location changed"}]' \
-  schemas/order-status-updated.avsc > /tmp/os-v2.avsc
+jq '.fields += [{"name":"roamingPartner","type":["null","string"],"default":null,"doc":"Visited network, if roaming"}]' \
+  schemas/call-record-created.avsc > /tmp/cr-v2.avsc
 
-jq -n --rawfile s /tmp/os-v2.avsc '{schema:$s}' \
+jq -n --rawfile s /tmp/cr-v2.avsc '{schema:$s}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' --data @- \
-  "$A_SR/compatibility/subjects/orders.order-status.updated.v1-value/versions/latest?verbose=true" | jq .
+  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions/latest?verbose=true" | jq .
 ```
 
 Expected: `{"is_compatible": true, "messages": []}`.
@@ -153,10 +158,10 @@ Expected: `{"is_compatible": true, "messages": []}`.
 An incompatible change — add a required field without a default:
 
 ```bash
-jq '.fields += [{"name":"region","type":"string"}]' schemas/order-status-updated.avsc > /tmp/os-bad.avsc
-jq -n --rawfile s /tmp/os-bad.avsc '{schema:$s}' \
+jq '.fields += [{"name":"region","type":"string"}]' schemas/call-record-created.avsc > /tmp/cr-bad.avsc
+jq -n --rawfile s /tmp/cr-bad.avsc '{schema:$s}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' --data @- \
-  "$A_SR/compatibility/subjects/orders.order-status.updated.v1-value/versions/latest?verbose=true" | jq .
+  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions/latest?verbose=true" | jq .
 ```
 
 Expected: `"is_compatible": false` and a message like `READER_FIELD_MISSING_DEFAULT_VALUE` for
@@ -174,17 +179,17 @@ published topic and test:
 
 ```bash
 a kafka-configs --bootstrap-server dc-a:29092 --alter \
-  --entity-type topics --entity-name orders.order-status.updated.v1 \
+  --entity-type topics --entity-name billing.call-record.created.v1 \
   --add-config confluent.value.schema.validation=true
 
 # 1) plain text, no schema ID -> must be rejected
 echo 'not-avro' | a kafka-console-producer \
-  --bootstrap-server dc-a:29092 --topic orders.order-status.updated.v1
+  --bootstrap-server dc-a:29092 --topic billing.call-record.created.v1
 
 # 2) proper Avro with the registered schema -> accepted
-echo '{"orderId":"SO-1001234","status":"READY","location":{"string":"ZONE-D7"},"eventTime":1762500000000}' \
+echo '{"recordId":"CDR-1001234","recordType":"VOICE","cellId":"CELL-0412","durationSec":184,"startTime":1762499816000,"eventTime":1762500000000}' \
 | sra kafka-avro-console-producer \
-  --bootstrap-server dc-a:29092 --topic orders.order-status.updated.v1 \
+  --bootstrap-server dc-a:29092 --topic billing.call-record.created.v1 \
   --reader-property schema.registry.url=http://localhost:8081 \
   --reader-property value.schema.id=1 --reader-property auto.register.schemas=false
 ```
@@ -193,9 +198,9 @@ Expected: (1) the producer logs an error containing `InvalidRecordException` / "
 failed the validation on broker" [V wording]; (2) succeeds.
 
 What this proves: the broker rejects a record **without** a valid ID. It does not prove the
-payload matches the schema. Try (3): produce with `value.schema.id=2` (the customer schema) to
-the order topic — with `TopicNameStrategy` the broker checks the ID is registered **under this
-topic's subject**, so it should be rejected [V].
+payload matches the schema. Try (3): produce with `value.schema.id=2` (the subscriber schema) to
+the call-record topic — with `TopicNameStrategy` the broker checks the ID is registered **under
+this topic's subject**, so it should be rejected [V].
 
 # Part B — cc-basic: catalog, tags, owner, lineage
 
@@ -228,46 +233,46 @@ Expected: the four names. `cf_entity` = applicable to any entity type.
 ## B3. Topics and schemas
 
 ```bash
-# orders.order-status.updated.v1 already exists (00-lab-setup)
-confluent kafka topic create customers.customer-journey.v1 --partitions 3
+# billing.call-record.created.v1 already exists (00-lab-setup)
+confluent kafka topic create customers.subscriber-profile.v1 --partitions 3
 
-for s in orders.order-status.updated.v1-value customers.customer-journey.v1-value; do
+for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-value; do
   curl -s -u $SR_AUTH -X PUT -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
     --data '{"compatibility":"BACKWARD_TRANSITIVE"}' $SR_URL/config/$s | jq -c .
 done
 
-jq -n --rawfile s schemas/order-status-updated.avsc \
-  '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"orders-team",classification:"C1",major_version:"1"}}}' \
+jq -n --rawfile s schemas/call-record-created.avsc \
+  '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"billing-team",classification:"C1",major_version:"1"}}}' \
 | curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
-  --data @- $SR_URL/subjects/orders.order-status.updated.v1-value/versions | jq .
+  --data @- $SR_URL/subjects/billing.call-record.created.v1-value/versions | jq .
 
-jq -n --rawfile s schemas/customer-journey.avsc \
-  '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"customers-team",classification:"C3",major_version:"1"}}}' \
+jq -n --rawfile s schemas/subscriber-profile.avsc \
+  '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"care-team",classification:"C3",major_version:"1"}}}' \
 | curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
-  --data @- $SR_URL/subjects/customers.customer-journey.v1-value/versions | jq .
+  --data @- $SR_URL/subjects/customers.subscriber-profile.v1-value/versions | jq .
 ```
 
-Expected: IDs in the 100000+ range (CC IDs are not 1, 2, …). Note them as `OS_ID`, `CJ_ID`.
+Expected: IDs in the 100000+ range (CC IDs are not 1, 2, …). Note them as `CR_ID`, `SP_ID`.
 
 ## B4. Tag topics, set owner and description
 
 ```bash
-Q_OS="$SR_ID:$CLUSTER_ID:orders.order-status.updated.v1"
-Q_CJ="$SR_ID:$CLUSTER_ID:customers.customer-journey.v1"
+Q_CR="$SR_ID:$CLUSTER_ID:billing.call-record.created.v1"
+Q_SP="$SR_ID:$CLUSTER_ID:customers.subscriber-profile.v1"
 
 curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/json' --data "[
-  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_OS\",\"typeName\":\"Public\"},
-  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_OS\",\"typeName\":\"DataProduct\"},
-  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_CJ\",\"typeName\":\"Confidential\"},
-  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_CJ\",\"typeName\":\"DataProduct\"}
+  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_CR\",\"typeName\":\"Public\"},
+  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_CR\",\"typeName\":\"DataProduct\"},
+  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_SP\",\"typeName\":\"Confidential\"},
+  {\"entityType\":\"kafka_topic\",\"entityName\":\"$Q_SP\",\"typeName\":\"DataProduct\"}
 ]" $SR_URL/catalog/v1/entity/tags | jq -c '.[] | {entityName, typeName}'
 
 # owner / ownerEmail / description on a topic [V: request shape; Terraform below is the reliable path]
 curl -s -u $SR_AUTH -X PUT -H 'Content-Type: application/json' --data "{
   \"entity\": {\"typeName\": \"kafka_topic\", \"attributes\": {
-    \"qualifiedName\": \"$Q_OS\", \"owner\": \"Orders team\",
-    \"ownerEmail\": \"orders-platform@example.org\",
-    \"description\": \"Operational status changes per order. Source: order management system. SLA tier T1.\"}}}" \
+    \"qualifiedName\": \"$Q_CR\", \"owner\": \"Billing team\",
+    \"ownerEmail\": \"billing-platform@example.org\",
+    \"description\": \"One call detail record per call, text or data session. Source: billing mediation. SLA tier T1.\"}}}" \
   $SR_URL/catalog/v1/entity | jq -c .
 ```
 
@@ -290,8 +295,8 @@ curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/basic?types=kafka_topic&query=cus
   | jq -r '.entities[].attributes.qualifiedName'
 ```
 
-Expected: two PII fields (`...CustomerJourney.email`, `...customerCardHash`), two DataProduct
-topics with their classification tag, one `customers` topic.
+Expected: four PII fields (`...SubscriberProfile.customerName`, `...msisdn`, `...email`,
+`...nationalId`), two DataProduct topics with their classification tag, one `customers` topic.
 
 Exercise: write the query a CI gate would run — "topics tagged `Confidential` whose value schema
 has PII fields" — and decide which of them may go into a cluster-link filter.
@@ -301,12 +306,12 @@ has PII fields" — and decide which of them may go into a cluster-link filter.
 Run a producer and a consumer within the same 10 minutes:
 
 ```bash
-confluent kafka topic produce orders.order-status.updated.v1 \
-  --value-format avro --schema schemas/order-status-updated.avsc \
+confluent kafka topic produce billing.call-record.created.v1 \
+  --value-format avro --schema schemas/call-record-created.avsc \
   --schema-registry-api-key ${SR_AUTH%%:*} --schema-registry-api-secret ${SR_AUTH#*:}
 # paste a few JSON lines like the one in A3, then Ctrl-D
 
-confluent kafka topic consume orders.order-status.updated.v1 --from-beginning \
+confluent kafka topic consume billing.call-record.created.v1 --from-beginning \
   --group lab04-lineage --value-format avro \
   --schema-registry-api-key ${SR_AUTH%%:*} --schema-registry-api-secret ${SR_AUTH#*:}
 ```
@@ -319,7 +324,7 @@ the schema if it is new — set `--schema-id` instead if your CLI supports it.]
 
 ## B7. Data Portal (browse only on Basic)
 
-Console → **Data Portal**. Search `orders`, open the topic. Expected: description, owner,
+Console → **Data Portal**. Search `billing`, open the topic. Expected: description, owner,
 tags, schema, lineage. The **Request access** button is missing or disabled on a Basic cluster
 [V]. That is Part D.
 
@@ -341,8 +346,8 @@ confluent api-key create --resource $SR_ID --service-account $SA_ID -o json > /t
 export SR_AUTH="$(jq -r .api_key /tmp/adv-sr.json):$(jq -r .api_secret /tmp/adv-sr.json)"
 confluent api-key create --resource $CLUSTER_ID --service-account $SA_ID -o json > /tmp/adv-kafka.json
 confluent api-key use $(jq -r .api_key /tmp/adv-kafka.json) --resource $CLUSTER_ID
-confluent kafka topic create orders.order-status.updated.v1 --partitions 3
-# then repeat B2-B4 here (tags, schemas, Q_OS with the new SR_ID and CLUSTER_ID)
+confluent kafka topic create billing.call-record.created.v1 --partitions 3
+# then repeat B2-B4 here (tags, schemas, Q_CR with the new SR_ID and CLUSTER_ID)
 ```
 
 These variables now point at `crash-course-adv`. Re-run the export block from Prerequisites
@@ -361,8 +366,8 @@ curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/json' --data '[{
   ]}]' $SR_URL/catalog/v1/types/businessmetadatadefs | jq '.[].name'
 
 curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/json' --data "[{
-  \"entityType\":\"kafka_topic\",\"entityName\":\"$Q_OS\",\"typeName\":\"DataProduct\",
-  \"attributes\":{\"domain\":\"orders\",\"sla\":\"T1\",\"support\":\"#orders-platform\"}}]" \
+  \"entityType\":\"kafka_topic\",\"entityName\":\"$Q_CR\",\"typeName\":\"DataProduct\",
+  \"attributes\":{\"domain\":\"billing\",\"sla\":\"T1\",\"support\":\"#billing-platform\"}}]" \
   $SR_URL/catalog/v1/entity/businessmetadata | jq -c .
 
 curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/attribute?type=kafka_topic&attrName=DataProduct.sla&attrValuePrefix=T1" \
@@ -377,16 +382,16 @@ A data-contract **CEL rule** (runs in the serializer, so test it with a client t
 executor on its classpath, e.g. the Java Avro serializer ≥ 7.4) [V]:
 
 ```bash
-jq -n --rawfile s schemas/order-status-updated.avsc '{
+jq -n --rawfile s schemas/call-record-created.avsc '{
   schemaType:"AVRO", schema:$s,
-  metadata:{properties:{owner:"orders-team",classification:"C1",major_version:"1"}},
+  metadata:{properties:{owner:"billing-team",classification:"C1",major_version:"1"}},
   ruleSet:{domainRules:[{
-    name:"orderIdFormat", kind:"CONDITION", type:"CEL", mode:"WRITE",
-    expr:"message.orderId.matches(\"^SO-[0-9]{7}$\")",
+    name:"recordIdFormat", kind:"CONDITION", type:"CEL", mode:"WRITE",
+    expr:"message.recordId.matches(\"^CDR-[0-9]{7}$\")",
     onFailure:"DLQ",
-    params:{"dlq.topic":"orders.order-status.updated.v1.dlq"}}]}}' \
+    params:{"dlq.topic":"billing.call-record.created.v1.dlq"}}]}}' \
 | curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
-  --data @- $SR_URL/subjects/orders.order-status.updated.v1-value/versions | jq .
+  --data @- $SR_URL/subjects/billing.call-record.created.v1-value/versions | jq .
 ```
 
 Expected: a new version with `ruleSet`. On Essentials the same call fails (rules need Advanced).
@@ -445,20 +450,20 @@ locals {
 
 locals {
   products = {
-    "orders.order-status.updated.v1" = {
-      schema_file    = "${path.module}/../schemas/order-status-updated.avsc"
-      owner          = "Orders team"
-      owner_email    = "orders-platform@example.org"
-      description    = "Operational status changes per order. Source: order management system. SLA tier T1."
+    "billing.call-record.created.v1" = {
+      schema_file    = "${path.module}/../schemas/call-record-created.avsc"
+      owner          = "Billing team"
+      owner_email    = "billing-platform@example.org"
+      description    = "One call detail record per call, text or data session. Source: billing mediation. SLA tier T1."
       classification = "C1"
       class_tag      = "Public"
       create_topic   = false   # owned by 00-lab-setup
     }
-    "customers.customer-journey.v1" = {
-      schema_file    = "${path.module}/../schemas/customer-journey.avsc"
-      owner          = "Customers team"
-      owner_email    = "customers-platform@example.org"
-      description    = "Customer progress through sites. Contains PII. Never in the link filter unencrypted."
+    "customers.subscriber-profile.v1" = {
+      schema_file    = "${path.module}/../schemas/subscriber-profile.avsc"
+      owner          = "Care team"
+      owner_email    = "care-platform@example.org"
+      description    = "Subscriber profiles. Contains PII. Never in the link filter unencrypted."
       classification = "C3"
       class_tag      = "Confidential"
       create_topic   = true
@@ -650,7 +655,7 @@ cd 04-stream-governance/terraform
 terraform init && terraform plan -out tf.plan && terraform apply tf.plan
 ```
 
-Expected: 4 tags, 1 topic (`customers.customer-journey.v1`), 2 subject configs, 2 schemas, 4 tag
+Expected: 4 tags, 1 topic (`customers.subscriber-profile.v1`), 2 subject configs, 2 schemas, 4 tag
 bindings, 2 entity attribute resources. If you did Part B first, delete what it created (Teardown,
 CLI path) or Terraform will hit "already exists" on the tags and the topic. If tag bindings fail with "not found", re-run apply (catalog lag); the
 `disable_wait_for_ready` default (`false`) should normally handle it.
@@ -659,8 +664,8 @@ CLI path) or Terraform will hit "already exists" on the tags and the topic. If t
 
 | Check | Command | Expected |
 |---|---|---|
-| Compatibility mode | `curl -s -u $SR_AUTH $SR_URL/config/customers.customer-journey.v1-value` | `BACKWARD_TRANSITIVE` |
-| PII fields | B5 first query | 2 fields |
+| Compatibility mode | `curl -s -u $SR_AUTH $SR_URL/config/customers.subscriber-profile.v1-value` | `BACKWARD_TRANSITIVE` |
+| PII fields | B5 first query | 4 fields |
 | Topic classification | B5 second query | `Public` / `Confidential` + `DataProduct` |
 | Owner set | Data Portal → topic | owner, email, description shown |
 | Drift | change the description in the console, run `terraform plan` | plan shows the change back |
@@ -673,9 +678,9 @@ The last check is the point of "Git is the source of truth": the console edit is
 # Terraform path
 cd 04-stream-governance/terraform && terraform destroy
 
-# CLI path (if you did not use Terraform). Keep orders.order-status.updated.v1: 00-lab-setup owns it.
-confluent kafka topic delete customers.customer-journey.v1 --force
-for s in orders.order-status.updated.v1-value customers.customer-journey.v1-value; do
+# CLI path (if you did not use Terraform). Keep billing.call-record.created.v1: 00-lab-setup owns it.
+confluent kafka topic delete customers.subscriber-profile.v1 --force
+for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-value; do
   curl -s -u $SR_AUTH -X DELETE "$SR_URL/subjects/$s"                  # soft delete
   curl -s -u $SR_AUTH -X DELETE "$SR_URL/subjects/$s?permanent=true"   # hard delete (frees schema count)
 done
@@ -687,8 +692,8 @@ done
 confluent environment delete $ADV_ENV --force
 
 # local
-a kafka-topics --bootstrap-server dc-a:29092 --delete --topic orders.order-status.updated.v1
-a kafka-topics --bootstrap-server dc-a:29092 --delete --topic customers.customer-journey.v1
+a kafka-topics --bootstrap-server dc-a:29092 --delete --topic billing.call-record.created.v1
+a kafka-topics --bootstrap-server dc-a:29092 --delete --topic customers.subscriber-profile.v1
 ```
 
 Soft-deleted schema versions still count against the schema allowance until hard-deleted.

@@ -3,6 +3,8 @@ title: 03 — Lab — public endpoint with IP filtering, then Azure Private Link
 subtitle: Part A on cc-basic (free), Part B on local, Part C in the paid-session (Enterprise + ingress PrivateLink Gateway), Part D written only (ExpressRoute + on-prem DNS)
 ---
 
+> **Video:** episode 3, "Kafka doesn't fit through a load balancer" (coming soon). The video gives the reasoning; this lab lets you see it happen.
+
 ## Goal
 
 1. See how a Kafka client really connects (bootstrap → metadata → brokers) and why that matters for exposure.
@@ -75,10 +77,10 @@ Expected: a wildcard SAN for the cluster domain. That wildcard is how all broker
 confluent api-key create --resource $CC_BASIC --description "lab03 public" -o json > /tmp/lab03-key.json
 confluent api-key use $(jq -r .api_key /tmp/lab03-key.json) --resource $CC_BASIC
 
-confluent kafka topic create orders.order-status.updated.v1 --partitions 3
-printf 'SO-1001001:{"orderId":"SO-1001001","status":"READY"}\nSO-1001002:{"orderId":"SO-1001002","status":"DELAYED"}\n' | \
-  confluent kafka topic produce orders.order-status.updated.v1 --parse-key --delimiter ":"
-confluent kafka topic consume orders.order-status.updated.v1 -b --print-key
+confluent kafka topic create billing.call-record.created.v1 --partitions 3
+printf 'SUB-1001001:{"recordId":"CDR-1001001","recordType":"VOICE"}\nSUB-1001002:{"recordId":"CDR-1001002","recordType":"DATA"}\n' | \
+  confluent kafka topic produce billing.call-record.created.v1 --parse-key --delimiter ":"
+confluent kafka topic consume billing.call-record.created.v1 -b --print-key
 ```
 
 Expected: the two records printed with their keys. Stop the consumer with Ctrl-C. (Wait a minute after creating the API key; new keys take a short time to propagate.)
@@ -118,7 +120,7 @@ Now block Kafka data from all public networks for this environment. The CLI help
 confluent iam ip-filter create lab03-block-data --resource-group multiple \
   --operations KAFKA_DATA,KAFKA_DISCOVERY --no-public-networks --environment $CC_ENV
 sleep 120
-confluent kafka topic consume orders.order-status.updated.v1 -b
+confluent kafka topic consume billing.call-record.created.v1 -b
 ```
 
 Expected if `KAFKA_DATA` filtering applies to Basic clusters: the consume fails with an authorization or connection error. If it still works, record that as a finding: `KAFKA_DATA` filtering does not apply to this cluster type or region **[V]**. Either way, management calls (`confluent kafka topic list`) keep working because the management filter allows your IP.
@@ -217,7 +219,7 @@ az network vnet subnet create -g $RG --vnet-name vnet-lab03 -n snet-vm --address
 az vm create -g $RG -n vm-lab03 --image Ubuntu2404 --size Standard_B2s \
   --vnet-name vnet-lab03 --subnet snet-vm --admin-username azureuser --generate-ssh-keys \
   --public-ip-sku Standard --nsg-rule NONE
-az network nsg rule create -g $RG --nsg-name vm-lab02NSG -n ssh-from-me --priority 100 \
+az network nsg rule create -g $RG --nsg-name vm-lab03NSG -n ssh-from-me --priority 100 \
   --source-address-prefixes ${MY_IP}/32 --destination-port-ranges 22 --access Allow --protocol Tcp
 ```
 
@@ -323,13 +325,13 @@ sasl.mechanism=PLAIN
 sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key lab03-ent-key.json)' password='$(jq -r .api_secret lab03-ent-key.json)';
 EOF
 kafka-topics.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties \
-  --create --topic tracking.item-scan.recorded.v1 --partitions 3
+  --create --topic noc.cell-alarm.raised.v1 --partitions 3
 kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -E '^[^ ]+:9092' | cut -d' ' -f1
 for b in $(kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -oE '^[^ ]+:9092' | cut -d: -f1 | head -3); do dig +short $b | tail -1; done
-echo 'IT-123:{"itemTag":"IT-123","scan":"SORTER-3"}' | kafka-console-producer.sh --bootstrap-server $BOOT_PL:9092 \
-  --producer.config cc-ent.properties --topic tracking.item-scan.recorded.v1 --reader-property parse.key=true --reader-property key.separator=:
+echo 'ALM-123:{"alarmId":"ALM-123","cellId":"CELL-0412"}' | kafka-console-producer.sh --bootstrap-server $BOOT_PL:9092 \
+  --producer.config cc-ent.properties --topic noc.cell-alarm.raised.v1 --reader-property parse.key=true --reader-property key.separator=:
 kafka-console-consumer.sh --bootstrap-server $BOOT_PL:9092 --consumer.config cc-ent.properties \
-  --topic tracking.item-scan.recorded.v1 --from-beginning --max-messages 1
+  --topic noc.cell-alarm.raised.v1 --from-beginning --max-messages 1
 ```
 
 Expected:
@@ -536,7 +538,7 @@ resource "confluent_service_account" "lab03" {
   description  = "lab03 private link client"
 }
 
-resource "confluent_role_binding" "lab02_admin" {
+resource "confluent_role_binding" "lab03_admin" {
   principal   = "User:${confluent_service_account.lab03.id}"
   role_name   = "CloudClusterAdmin"
   crn_pattern = confluent_kafka_cluster.ent.rbac_crn
@@ -555,7 +557,7 @@ resource "confluent_api_key" "lab03" {
     kind        = confluent_kafka_cluster.ent.kind
     environment { id = var.env_id }
   }
-  depends_on = [confluent_role_binding.lab02_admin, confluent_access_point.ap]
+  depends_on = [confluent_role_binding.lab03_admin, confluent_access_point.ap]
 }
 
 output "vm_public_ip"   { value = azurerm_public_ip.vm.ip_address }

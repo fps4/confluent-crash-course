@@ -63,12 +63,12 @@ https://developer.confluent.io/courses/governing-data-streams/schema-registry/
 
 | Part | What it is | Example |
 |---|---|---|
-| Schema | Structure | Avro record `OrderStatusUpdated` |
-| Metadata | Free key/value properties on the version | `owner=orders`, `classification=C1`, `major_version=1` |
+| Schema | Structure | Avro record `CallRecordCreated` |
+| Metadata | Free key/value properties on the version | `owner=billing`, `classification=C1`, `major_version=1` |
 | Tags | Labels on the schema or on fields (inline `confluent:tags` or in metadata) | field `email` tagged `PII` |
 | Rules | Executable policy, run in the **client serializer/deserializer** | CEL condition, JSONata migration, ENCRYPT (CSFLE) |
 
-Rule kinds: `CONDITION` (validate, e.g. CEL `message.orderId.matches('^SO-[0-9]{7}$')`)
+Rule kinds: `CONDITION` (validate, e.g. CEL `message.recordId.matches('^CDR-[0-9]{7}$')`)
 and `TRANSFORM` (change, e.g. encrypt a tagged field, or migrate between major versions with
 JSONata). Modes: `WRITE`, `READ`, `WRITEREAD`, `UPGRADE`, `DOWNGRADE`, `UPDOWN`. On failure:
 `ERROR`, `NONE`, or `DLQ` (send to a dead-letter topic). **Rules need Stream Governance Advanced in
@@ -224,7 +224,7 @@ flowchart LR
     CAT["Stream Catalog<br/>tags, business metadata, owner"]
     LIN["Stream Lineage<br/>observed producers/consumers"]
     DP["Data Portal<br/>search + access requests"]
-    T["Topic orders.order-status.updated.v1"]
+    T["Topic billing.call-record.created.v1"]
   end
   P["Producer app<br/>Avro serializer, auto.register=false"] -->|"schema ID + payload"| T
   T --> C["Consumer / Flink / Tableflow"]
@@ -250,7 +250,7 @@ sequenceDiagram
   participant CAT as Stream Catalog
   actor OW as Topic owner (ResourceOwner)
   participant RBAC as CC RBAC
-  DS->>DP: search tag "Public" + "sites"
+  DS->>DP: search tag "Public" + "network"
   DP->>CAT: prefix search
   CAT-->>DP: topic, schema, owner, lineage (no data)
   DS->>DP: Request access: Read only, reason
@@ -270,7 +270,7 @@ sequenceDiagram
   participant CI as CI pipeline
   participant SR as Schema Registry
   participant TF as Terraform apply
-  Dev->>CI: PR: add optional field locationChangeReason (default null)
+  Dev->>CI: PR: add optional field roamingPartner (default null)
   CI->>CI: lint (docs, defaults, naming, additive only)
   CI->>SR: POST /compatibility/subjects/SUBJECT/versions/latest
   SR-->>CI: is_compatible=true

@@ -298,7 +298,7 @@ ExpressRoute ingress into Azure is free; Confluent charges cluster ingress per G
 No, inbound Private Link is one-way. For managed connectors to reach private Azure services, use **egress Private Link endpoints** (Confluent creates the endpoint to your Private Link service) or peering on Dedicated. Source-initiated Cluster Linking means Confluent never needs to reach the DC.
 
 **Q9. Public endpoint with IP filtering — good enough for non-sensitive streams?**
-For PII-free, non-critical data (queue-length sensors, test environments) it can be. IP filtering restricts management, schema, Flink and, per the operation groups, Kafka data **[V]** to known CIDRs, and OAuth with short-lived tokens removes long-lived secrets. But Confluent's ingress IPs are not static, so your own egress firewall must allow by FQDN, and the data still crosses the internet.
+For PII-free, non-critical data (cell-load measurements, test environments) it can be. IP filtering restricts management, schema, Flink and, per the operation groups, Kafka data **[V]** to known CIDRs, and OAuth with short-lived tokens removes long-lived secrets. But Confluent's ingress IPs are not static, so your own egress firewall must allow by FQDN, and the data still crosses the internet.
 
 **Q10. How do you avoid a single private endpoint becoming a bottleneck or SPOF?**
 A private endpoint is a zone-redundant Azure construct, not a VM, and has high throughput **[V]**. For the gateway model, add a second access point (another private endpoint) in another spoke if teams need isolation; for Dedicated multi-zone you already have three zonal endpoints. The bigger SPOF is ExpressRoute: two circuits or circuit + VPN.

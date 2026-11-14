@@ -20,10 +20,10 @@ A registered schema version can carry four things:
 
 | Part | Holds | Example |
 |---|---|---|
-| **Schema** | structure (Avro / Protobuf / JSON Schema) | `OrderStatusUpdated` record |
-| **Metadata** | `properties` (key/value), `tags` (by field path), `sensitive` (property names to encrypt) | `owner=orders-team`, `classification=internal`, `major_version=1` |
+| **Schema** | structure (Avro / Protobuf / JSON Schema) | `CallRecordCreated` record |
+| **Metadata** | `properties` (key/value), `tags` (by field path), `sensitive` (property names to encrypt) | `owner=billing-team`, `classification=internal`, `major_version=1` |
 | **Tags** | inline in the schema (`"confluent:tags": ["PII"]`) or in metadata | `customerName` tagged `PII` |
-| **Rule set** | `domainRules` (WRITE/READ) and `migrationRules` (UPGRADE/DOWNGRADE) | CEL check on order ID; JSONata rename |
+| **Rule set** | `domainRules` (WRITE/READ) and `migrationRules` (UPGRADE/DOWNGRADE) | CEL check on the record ID; JSONata rename |
 
 Requirements: CP **7.4+** with **Confluent Enterprise** and
 `resource.extension.class=io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension`
@@ -33,7 +33,7 @@ executors) next to the serializer, both ≥ 7.4.
 
 ```mermaid
 flowchart TB
-  subgraph REG["Schema Registry: subject orders.order-status.updated.v1-value"]
+  subgraph REG["Schema Registry: subject billing.call-record.created.v1-value"]
     V1["version 1<br/>schema + metadata (owner, classification, major_version=1)<br/>ruleSet.domainRules: CEL checks, DLQ"]
     V2["version 2 (breaking)<br/>metadata (major_version=2)<br/>ruleSet.migrationRules: JSONata UPGRADE / DOWNGRADE"]
     CFG["subject config<br/>compatibility=BACKWARD_TRANSITIVE<br/>compatibilityGroup=major_version"]
@@ -82,20 +82,20 @@ The expression gets the whole record as `message`.
   "ruleSet": {
     "domainRules": [
       {
-        "name": "orderIdFormat",
+        "name": "recordIdFormat",
         "kind": "CONDITION",
         "type": "CEL",
         "mode": "WRITE",
-        "expr": "message.orderId.matches('^SO-[0-9]{7}$')",
-        "params": { "dlq.topic": "orders.order-status.updated.v1.dlq" },
+        "expr": "message.recordId.matches('^CDR-[0-9]{7}$')",
+        "params": { "dlq.topic": "billing.call-record.created.v1.dlq" },
         "onFailure": "DLQ"
       },
       {
-        "name": "statusKnown",
+        "name": "durationNotNegative",
         "kind": "CONDITION",
         "type": "CEL",
         "mode": "WRITE",
-        "expr": "message.status in ['CREATED','CONFIRMED','DELAYED','LOCATION_CHANGE','READY','DISPATCHED','CANCELLED','UNKNOWN']",
+        "expr": "message.durationSec >= 0",
         "onFailure": "ERROR"
       }
     ]
@@ -168,10 +168,10 @@ For a **breaking** change you have two options:
   "metadata": { "properties": { "major_version": "2" } },
   "ruleSet": {
     "migrationRules": [
-      { "name": "statusToOrderStatus", "kind": "TRANSFORM", "type": "JSONATA", "mode": "UPGRADE",
-        "expr": "$merge([$sift($, function($v, $k) {$k != 'status'}), {'orderStatus': $.'status'}])" },
-      { "name": "orderStatusToStatus", "kind": "TRANSFORM", "type": "JSONATA", "mode": "DOWNGRADE",
-        "expr": "$merge([$sift($, function($v, $k) {$k != 'orderStatus'}), {'status': $.'orderStatus'}])" }
+      { "name": "recordTypeToUsageType", "kind": "TRANSFORM", "type": "JSONATA", "mode": "UPGRADE",
+        "expr": "$merge([$sift($, function($v, $k) {$k != 'recordType'}), {'usageType': $.'recordType'}])" },
+      { "name": "usageTypeToRecordType", "kind": "TRANSFORM", "type": "JSONATA", "mode": "DOWNGRADE",
+        "expr": "$merge([$sift($, function($v, $k) {$k != 'usageType'}), {'recordType': $.'usageType'}])" }
     ]
   }
 }
@@ -189,7 +189,7 @@ sequenceDiagram
   C1->>K: poll
   C1->>SR: schema for v2 id, and latest with major_version=1
   SR-->>C1: v2 (with DOWNGRADE rule) and v1
-  C1->>C1: JSONata DOWNGRADE orderStatus to status
+  C1->>C1: JSONata DOWNGRADE usageType to recordType
   C1->>C1: deserialize as v1, run READ rules
 ```
 
@@ -205,7 +205,7 @@ for app-to-app topics with Java/Go/Python clients. [V]
 | Format | Avro; Protobuf allowed for service teams |
 | Compatibility | `BACKWARD_TRANSITIVE` set explicitly on published subjects (not relying on the BACKWARD default) + CI lint "additive only" |
 | Metadata | `owner`, `classification`, `major_version`, `sla` mandatory (`defaultMetadata` + CI check) |
-| Rules | CEL checks for business keys (order ID, item tag, location ID) in the platform producer template; DLQ per data product |
+| Rules | CEL checks for business keys (record ID, alarm ID, cell ID) in the platform producer template; DLQ per data product |
 | PII | tags + `ENCRYPT` (CSFLE, KEK in Azure Key Vault) via `overrideRuleSet` on tag `PII` |
 | Breaking change | `.v2` topic for analytics consumers; compatibility groups + JSONata only for app-to-app topics |
 | Where rules can't run (Flink SQL, CC Connect) | write the check in SQL / validate in a client app before republishing |
@@ -228,7 +228,7 @@ UPGRADE/DOWNGRADE rules, consumers pinned with `use.latest.with.metadata`. Each 
 own major version. It only works for consumers running the Confluent deserializer with the rule
 executor — not for Spark `from_avro` or Tableflow.
 
-**4. Harder: "Your order-ID rule rejects a record from the item-tracking system at 03:00. What happens to that item's event?"**
+**4. Harder: "Your record-ID rule rejects a record from the NOC alarm system at 03:00. What happens to that alarm?"**
 With `onFailure=DLQ` the producer does not fail; the record goes to the DLQ topic with its key
 (wrapper key serializer) and the owning team is alerted. Business impact decides per rule:
 ERROR for rules where a bad record must stop the producer, DLQ where flow matters more. DLQ

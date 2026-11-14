@@ -26,6 +26,66 @@ Versions pinned on 2026-11-07:
 CP 8.4 is two weeks old today. If something in 8.4.0 breaks a lab, change the four image tags to
 the latest 8.3.x and note it in the lab. [V]
 
+# The running example
+
+Every module uses the same organisation: a **mobile operator**. Billing, the network operations
+centre (NOC) and customer care run on Confluent Platform in two data centres, `dc-a` and `dc-b`.
+The data and AI teams in Azure want the same events for fraud and churn models, live and with a
+year of history, and must not put load on the operational clusters.
+
+| Topic | One record is | Key | Owner | Class |
+|---|---|---|---|---|
+| `billing.call-record.created.v1` | one call detail record (CDR): a call, a text or a data session | subscriber reference `SUB-1001601` | `billing-team` | C1: no direct identifiers; the subscriber reference is a pseudonym |
+| `billing.call-record.validated.v1` | the same record, on a Confluent Cloud topic with broker-side validation | `SUB-…` | `billing-team` | C1 |
+| `billing.subscriber-balance.latest.v1` | current prepaid balance of one subscriber (compacted) | `SUB-…` | `billing-team` | C1 |
+| `noc.cell-alarm.raised.v1` | one alarm from a radio cell | alarm id `ALM-100001` | `noc-team` | C1 |
+| `noc.cell-alarm.history.v1` | the alarm history, kept longer | `ALM-…` | `noc-team` | C1 |
+| `network.cell-load.measured.v1` | the load of one cell in one minute | none | `network-team` | C1 |
+| `network.cell-load.forecast.v1` | the predicted load of one cell for one slot | `CELL-0412` | `network-team` | C1 |
+| `network.cell-load.jobs.v1` | a work item (the share-group demo) | none | `network-team` | C1 |
+| `network.cell-config.changed.v1` | a cell's configuration changed | `CELL-…` | `network-team` | C1 |
+| `customers.subscriber-profile.v1` | one subscriber's profile, with synthetic personal data | `SUB-…` | `care-team` | C3: PII |
+
+The two schemas most labs use (Avro). Fields in **customers.subscriber-profile.v1** tagged `PII`:
+`customerName`, `msisdn`, `email`, `nationalId`.
+
+```json
+{"type":"record","name":"CallRecordCreated","namespace":"com.example.billing",
+ "doc":"One call detail record: a call, a text or a data session. No direct identifiers; the key is a pseudonymous subscriber reference.",
+ "fields":[
+  {"name":"recordId","type":"string","doc":"CDR id, e.g. CDR-1001601"},
+  {"name":"recordType","type":"string","doc":"VOICE|SMS|DATA|ROAMING_VOICE|ROAMING_DATA|UNKNOWN"},
+  {"name":"cellId","type":"string","doc":"Serving cell, e.g. CELL-0412"},
+  {"name":"durationSec","type":"long","doc":"Seconds for a call or a session; 0 for a text"},
+  {"name":"startTime","type":{"type":"long","logicalType":"timestamp-millis"}},
+  {"name":"eventTime","type":{"type":"long","logicalType":"timestamp-millis"}}
+ ]}
+```
+
+```json
+{"type":"record","name":"SubscriberProfile","namespace":"com.example.customers",
+ "doc":"One subscriber's profile. Synthetic personal data for the governance and encryption labs.",
+ "fields":[
+  {"name":"subscriberRef","type":"string","doc":"Pseudonymous reference, e.g. SUB-1001601"},
+  {"name":"customerName","type":"string"},
+  {"name":"msisdn","type":"string","doc":"Phone number"},
+  {"name":"email","type":"string"},
+  {"name":"nationalId","type":"string"},
+  {"name":"plan","type":"string","doc":"PREPAID|POSTPAID|BUSINESS"},
+  {"name":"eventTime","type":{"type":"long","logicalType":"timestamp-millis"}}
+ ]}
+```
+
+Sample records:
+
+```json
+{"recordId":"CDR-1001601","recordType":"VOICE","cellId":"CELL-0412","durationSec":184,"startTime":1762499000000,"eventTime":1762499184000}
+{"subscriberRef":"SUB-1001601","customerName":"Anna de Vries","msisdn":"+31612345678","email":"anna@example.org","nationalId":"ID1234567","plan":"POSTPAID","eventTime":1762499000000}
+```
+
+Consumer groups and service accounts follow the teams: `billing-rater` (the billing engine reading
+call records), `alarm-router` (the NOC), `cells-ui`, `analytics-*` for the Azure teams.
+
 # Licence terms (checked 2026-11-07)
 
 - **Developer licence**: full use of commercial features, free, **no expiry**, **non-production**,
@@ -178,9 +238,8 @@ talking to; `docker context show` does the same.
 ## Next
 
 The local stack is all module 02 needs for parts A–C, and all module 01 needs for its local part.
-The suggested order in the [course README](../README.md#modules--suggested-order) starts with
-[08](../01-linking-and-contracts/lab.md), then [01](../02-hybrid-multicloud/lab.md). Set up
-`cc-basic` (below) when a lab first asks for it.
+Start with [module 01](../01-linking-and-contracts/lab.md) and go in order
+([course README](../README.md#modules)). Set up `cc-basic` (below) when a lab first asks for it.
 
 # `cc-basic` — create with Terraform
 
@@ -232,7 +291,7 @@ What the base creates (and what it does not):
 | Schema Registry | data source | Auto-provisioned per environment |
 | Service account | `sa-crash-admin` | `EnvironmentAdmin` on `crash-course` (lab shortcut) |
 | API keys | Kafka key for `cc-basic`, SR key | Secrets only in state and `terraform output -raw` |
-| Topics | `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` | PII-free. `customers.customer-journey.v1` (PII) is created by the CSFLE/governance modules |
+| Topics | `billing.call-record.created.v1`, `noc.cell-alarm.raised.v1`, `network.cell-load.measured.v1` | PII-free. `customers.subscriber-profile.v1` (PII) is created by the CSFLE/governance modules |
 
 Other modules reference these values with `terraform output`, or with a `terraform_remote_state`
 data source pointing at `00-lab-setup/terraform/terraform.tfstate`.

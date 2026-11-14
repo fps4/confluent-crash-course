@@ -3,6 +3,8 @@ title: 08 — Lab — Kafka internals
 subtitle: ISR shrink and expand, acks=all vs acks=1 with min.insync.replicas, simulated cross-DC latency, compaction, a KIP-848 consumer group, a share group, a controller outage, tiered storage on MinIO
 ---
 
+> **Video:** episode 8, "One layer down" (coming soon). The video gives the reasoning; this lab lets you see it happen.
+
 **[V]** = check against your CP/Kafka version, image tag or CLI.
 
 # Goal
@@ -38,6 +40,8 @@ brokers, so ISR changes can still be recorded. E6 then stops the controller on p
 - Licence: the developer licence covers **one broker per cluster**. This is a separate,
   three-broker cluster, so it starts a **30-day trial** for this cluster only (it does not touch
   `dc-a`/`dc-b`). Fine for a lab; `down -v` and start again if it expires.
+- Start clean if you ran this lab before, because the topics below would already exist:
+  `docker compose -f 08-kafka-internals/docker-compose.3broker.yml down -v` (the start step below brings it up again).
 
 `08-kafka-internals/docker-compose.3broker.yml` (create it from this snippet):
 
@@ -125,9 +129,9 @@ Expected: quorum status with `LeaderId: 100`; `3` brokers. Ports 39092–39094 d
 # E1 — ISR shrink and expand
 
 ```bash
-$K kafka-topics --bootstrap-server $BS --create --topic orders.order-status.updated.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic billing.call-record.created.v1 \
   --partitions 3 --replication-factor 3 --config min.insync.replicas=2
-$K kafka-topics --bootstrap-server $BS --describe --topic orders.order-status.updated.v1
+$K kafka-topics --bootstrap-server $BS --describe --topic billing.call-record.created.v1
 ```
 
 Expected: 3 partitions, each `Replicas: x,y,z  Isr: x,y,z`. Kafka 4.x also prints `Elr:` and
@@ -138,7 +142,7 @@ Stop one broker:
 ```bash
 docker stop internals-b3-1
 sleep 15
-$K kafka-topics --bootstrap-server $BS --describe --topic orders.order-status.updated.v1
+$K kafka-topics --bootstrap-server $BS --describe --topic billing.call-record.created.v1
 $K kafka-topics --bootstrap-server $BS --describe --under-replicated-partitions
 ```
 
@@ -146,7 +150,7 @@ Expected: broker 3 gone from every `Isr`; partitions it led now have a new leade
 partitions are under-replicated. Writes with `acks=all` still work (ISR 2 ≥ minISR 2):
 
 ```bash
-$K kafka-producer-perf-test --topic orders.order-status.updated.v1 --num-records 1000 \
+$K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 1000 \
   --record-size 200 --throughput -1 --producer-props bootstrap.servers=$BS acks=all
 ```
 
@@ -156,8 +160,8 @@ Stop a second broker:
 docker stop internals-b2-1
 sleep 15
 $K kafka-topics --bootstrap-server b1:29092 --describe --under-min-isr-partitions
-echo 'SO-1001234:READY' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic orders.order-status.updated.v1 --reader-property parse.key=true --reader-property key.separator=: \
+echo 'SUB-1001234:VOICE' | $K kafka-console-producer --bootstrap-server b1:29092 \
+  --topic billing.call-record.created.v1 --reader-property parse.key=true --reader-property key.separator=: \
   --command-property acks=all --command-property delivery.timeout.ms=15000 \
   --command-property request.timeout.ms=10000
 ```
@@ -166,16 +170,16 @@ Expected: all partitions under min ISR. The `acks=all` produce fails after the t
 `NOT_ENOUGH_REPLICAS` (or `NotEnoughReplicasException`). Now `acks=1`:
 
 ```bash
-echo 'SO-1005678:DISPATCHED' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic orders.order-status.updated.v1 --reader-property parse.key=true --reader-property key.separator=: \
+echo 'SUB-1005678:SMS' | $K kafka-console-producer --bootstrap-server b1:29092 \
+  --topic billing.call-record.created.v1 --reader-property parse.key=true --reader-property key.separator=: \
   --command-property acks=1
-$K kafka-console-consumer --bootstrap-server b1:29092 --topic orders.order-status.updated.v1 \
+$K kafka-console-consumer --bootstrap-server b1:29092 --topic billing.call-record.created.v1 \
   --from-beginning --formatter-property print.key=true --timeout-ms 10000 | grep -c . ; \
-$K kafka-get-offsets --bootstrap-server b1:29092 --topic orders.order-status.updated.v1
+$K kafka-get-offsets --bootstrap-server b1:29092 --topic billing.call-record.created.v1
 ```
 
 Expected: the `acks=1` write is **accepted**. With ELR active (default on new 4.1+ clusters), the
-high watermark does not advance while ISR < minISR, so the consumer **does not see** `SO-1005678`
+high watermark does not advance while ISR < minISR, so the consumer **does not see** `SUB-1005678`
 yet, and `kafka-get-offsets` (which reports the high watermark for "latest") does not move
 either [V]. Without ELR the record is visible at once, but it lives on one disk only. Note what
 you saw — it is a useful detail either way.
@@ -185,26 +189,26 @@ Bring brokers back:
 ```bash
 docker start internals-b2-1 internals-b3-1
 sleep 20
-$K kafka-topics --bootstrap-server $BS --describe --topic orders.order-status.updated.v1
-$K kafka-console-consumer --bootstrap-server $BS --topic orders.order-status.updated.v1 \
-  --from-beginning --formatter-property print.key=true --timeout-ms 10000 | grep SO-1005678
+$K kafka-topics --bootstrap-server $BS --describe --topic billing.call-record.created.v1
+$K kafka-console-consumer --bootstrap-server $BS --topic billing.call-record.created.v1 \
+  --from-beginning --formatter-property print.key=true --timeout-ms 10000 | grep SUB-1005678
 ```
 
 Expected: ISR back to 3 for all partitions (expand), leadership may stay on b1 until preferred
 leader election runs (`auto.leader.rebalance.enable`, default every 5 min) or you run
-`kafka-leader-election --election-type preferred --all-topic-partitions`. `SO-1005678` is now visible.
+`kafka-leader-election --election-type preferred --all-topic-partitions`. `SUB-1005678` is now visible.
 
 # E2 — acks and cross-DC latency
 
 Pin one partition's leader to b1 so we control who is "remote":
 
 ```bash
-$K kafka-topics --bootstrap-server $BS --create --topic tracking.item-scan.recorded.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic noc.cell-alarm.raised.v1 \
   --replica-assignment 1:2:3 --config min.insync.replicas=2
 
 for a in 1 all; do
   echo "acks=$a"
-  $K kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 --num-records 20000 \
+  $K kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 --num-records 20000 \
     --record-size 500 --throughput 2000 \
     --producer-props bootstrap.servers=$BS acks=$a linger.ms=0 | tail -1
 done
@@ -222,7 +226,7 @@ docker run --rm --net container:internals-b3-1 --cap-add NET_ADMIN nicolaka/nets
 
 for a in 1 all; do
   echo "acks=$a"
-  $K kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 --num-records 20000 \
+  $K kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 --num-records 20000 \
     --record-size 500 --throughput 2000 \
     --producer-props bootstrap.servers=$BS acks=$a linger.ms=0 | tail -1
 done
@@ -235,7 +239,7 @@ every write. Now try `delay 200ms 100ms` (jitter) and watch for ISR churn:
 ```bash
 docker run --rm --net container:internals-b3-1 --cap-add NET_ADMIN nicolaka/netshoot \
   tc qdisc change dev eth0 root netem delay 200ms 100ms
-$K kafka-topics --bootstrap-server $BS --describe --topic tracking.item-scan.recorded.v1
+$K kafka-topics --bootstrap-server $BS --describe --topic noc.cell-alarm.raised.v1
 ```
 
 With 200 ms the follower usually stays in the ISR (it still catches up within 10 s), but latency
@@ -253,39 +257,40 @@ for it — that is why observers exist.
 # E3 — compaction
 
 ```bash
-$K kafka-topics --bootstrap-server $BS --create --topic orders.order-status.latest.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic billing.subscriber-balance.latest.v1 \
   --partitions 1 --replication-factor 3 \
   --config cleanup.policy=compact --config segment.ms=5000 \
   --config min.cleanable.dirty.ratio=0.01 --config delete.retention.ms=20000 \
   --config min.compaction.lag.ms=0
 
-cat <<'EOF' | $K kafka-console-producer --bootstrap-server $BS --topic orders.order-status.latest.v1 \
+cat <<'EOF' | $K kafka-console-producer --bootstrap-server $BS --topic billing.subscriber-balance.latest.v1 \
   --reader-property parse.key=true --reader-property key.separator=: --reader-property null.marker=NULL
-SO-1001001:CREATED
-SO-1001002:CREATED
-SO-1001001:READY
-SO-1001003:CREATED
-SO-1001001:DISPATCHED
-SO-1001002:CANCELLED
-SO-1001003:NULL
+SUB-1001001:{"subscriberRef":"SUB-1001001","balanceCents":1250}
+SUB-1001002:{"subscriberRef":"SUB-1001002","balanceCents":500}
+SUB-1001001:{"subscriberRef":"SUB-1001001","balanceCents":1100}
+SUB-1001003:{"subscriberRef":"SUB-1001003","balanceCents":2000}
+SUB-1001001:{"subscriberRef":"SUB-1001001","balanceCents":950}
+SUB-1001002:{"subscriberRef":"SUB-1001002","balanceCents":0}
+SUB-1001003:NULL
 EOF
 ```
 
-`null.marker` turns `NULL` into a real null value (a tombstone) [V: console producer option since
-Kafka 3.2]. Read immediately:
+`null.marker` turns `NULL` into a real null value (a tombstone: subscriber `SUB-1001003` left)
+[V: console producer option since Kafka 3.2]. Read immediately:
 
 ```bash
-$K kafka-console-consumer --bootstrap-server $BS --topic orders.order-status.latest.v1 \
+$K kafka-console-consumer --bootstrap-server $BS --topic billing.subscriber-balance.latest.v1 \
   --from-beginning --formatter-property print.key=true --formatter-property print.offset=true --timeout-ms 5000
 ```
 
 Expected: all 7 records — they are in the **active segment**, which is never compacted.
-Wait > 10 s, produce one more record to roll the segment (`SO-1001004:CREATED`), wait 15 s, read
-again:
+Wait > 10 s, produce one more record to roll the segment
+(`SUB-1001004:{"subscriberRef":"SUB-1001004","balanceCents":1000}`), wait 15 s, read again:
 
-Expected: `SO-1001001 DISPATCHED`, `SO-1001002 CANCELLED`, `SO-1001003 null` (tombstone still kept),
-`SO-1001004 CREATED`; offsets have **gaps**. After `delete.retention.ms` (20 s) plus another
-cleaning, the `SO-1001003` tombstone disappears as well. Exact timing depends on cleaner scheduling.
+Expected: `SUB-1001001` with `"balanceCents":950`, `SUB-1001002` with `"balanceCents":0`,
+`SUB-1001003 null` (tombstone still kept), `SUB-1001004` with `"balanceCents":1000`; offsets have
+**gaps**. After `delete.retention.ms` (20 s) plus another cleaning, the `SUB-1001003` tombstone
+disappears as well. Exact timing depends on cleaner scheduling.
 
 Talking points: duplicates per key are normal until cleaning; a consumer offline longer than
 `delete.retention.ms` misses the delete; compaction is not a GDPR erase for copies elsewhere.
@@ -293,18 +298,18 @@ Talking points: duplicates per key are normal until cleaning; a consumer offline
 # E4 — a KIP-848 consumer group
 
 ```bash
-$K kafka-topics --bootstrap-server $BS --create --topic sites.queue-length.measured.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic network.cell-load.measured.v1 \
   --partitions 6 --replication-factor 3
 
 # producer in the background: one record per second
-docker exec -d internals-b1-1 bash -c 'for i in $(seq 1 100000); do echo "Q-$((i%6)):q=$((RANDOM%80))"; sleep 1; done \
-  | kafka-console-producer --bootstrap-server b1:29092 --topic sites.queue-length.measured.v1 \
+docker exec -d internals-b1-1 bash -c 'for i in $(seq 1 100000); do echo "CELL-$((i%6)):load=$((RANDOM%80))"; sleep 1; done \
+  | kafka-console-producer --bootstrap-server b1:29092 --topic network.cell-load.measured.v1 \
     --reader-property parse.key=true --reader-property key.separator=:'
 
 # two consumers with the new protocol
 for n in 1 2; do
   docker exec -d internals-b1-1 kafka-console-consumer --bootstrap-server b1:29092 \
-    --topic sites.queue-length.measured.v1 --group analytics-kip848 \
+    --topic network.cell-load.measured.v1 --group analytics-kip848 \
     --command-property group.protocol=consumer --command-property client.id=c$n
 done
 sleep 10
@@ -337,15 +342,15 @@ $K kafka-features --bootstrap-server $BS describe | grep -i share
 # if share.version is 0 / missing:
 $K kafka-features --bootstrap-server $BS upgrade --feature share.version=1      # [V]
 
-$K kafka-topics --bootstrap-server $BS --create --topic sites.queue-length.jobs.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic network.cell-load.jobs.v1 \
   --partitions 1 --replication-factor 3
 
 for n in 1 2; do
   docker exec -d internals-b1-1 bash -c "kafka-console-share-consumer --bootstrap-server b1:29092 \
-    --topic sites.queue-length.jobs.v1 --group sg-workers > /tmp/w$n.txt 2>&1"
+    --topic network.cell-load.jobs.v1 --group sg-workers > /tmp/w$n.txt 2>&1"
 done
 seq 1 50 | sed 's/^/job-/' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic sites.queue-length.jobs.v1
+  --topic network.cell-load.jobs.v1
 sleep 5
 docker exec internals-b1-1 bash -c 'wc -l /tmp/w1.txt /tmp/w2.txt'
 $K kafka-share-groups --bootstrap-server $BS --describe --group sg-workers
@@ -360,7 +365,7 @@ your image is older than Kafka 4.2 / CP 8.2 — skip and read notes part 2 §2.9
 ```bash
 docker stop internals-c1-1
 # data plane still works for partitions whose leaders are alive
-$K kafka-producer-perf-test --topic orders.order-status.updated.v1 --num-records 500 \
+$K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 500 \
   --record-size 200 --throughput -1 --producer-props bootstrap.servers=$BS acks=all
 # metadata changes do not
 timeout 40 $K kafka-topics --bootstrap-server $BS --create --topic should-fail \
@@ -368,7 +373,7 @@ timeout 40 $K kafka-topics --bootstrap-server $BS --create --topic should-fail \
 # now lose a broker while the controller is down
 docker stop internals-b2-1
 sleep 15
-$K kafka-producer-perf-test --topic orders.order-status.updated.v1 --num-records 500 \
+$K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 500 \
   --record-size 200 --throughput -1 --producer-props bootstrap.servers=b1:29092 acks=all \
   delivery.timeout.ms=20000 request.timeout.ms=10000 2>&1 | tail -3
 docker start internals-c1-1 internals-b2-1
@@ -413,16 +418,16 @@ Create the bucket (`docker run --rm --net internals_default minio/mc sh -c "mc a
 http://minio:9000 minio minio12345 && mc mb m/kafka-tier"`), recreate the brokers, then:
 
 ```bash
-$K kafka-topics --bootstrap-server $BS --create --topic tracking.item-scan.history.v1 \
+$K kafka-topics --bootstrap-server $BS --create --topic noc.cell-alarm.history.v1 \
   --partitions 1 --replication-factor 3 \
   --config confluent.tier.enable=true --config confluent.tier.local.hotset.ms=60000 \
   --config segment.ms=20000 --config retention.ms=86400000
-$K kafka-producer-perf-test --topic tracking.item-scan.history.v1 --num-records 200000 \
+$K kafka-producer-perf-test --topic noc.cell-alarm.history.v1 --num-records 200000 \
   --record-size 500 --throughput 2000 --producer-props bootstrap.servers=$BS
 # after ~2 minutes
 docker run --rm --net internals_default minio/mc sh -c \
   "mc alias set m http://minio:9000 minio minio12345 >/dev/null && mc ls --recursive m/kafka-tier | head"
-docker exec internals-b1-1 bash -c 'ls /var/lib/kafka/data/tracking.item-scan.history.v1-0/ | head'
+docker exec internals-b1-1 bash -c 'ls /var/lib/kafka/data/noc.cell-alarm.history.v1-0/ | head'
 ```
 
 Expected: segment objects in the bucket; after the hotset (60 s) the local partition directory
@@ -436,7 +441,7 @@ Reminder: this works on a normal cluster. **Not with Multi-Region Clusters** (CP
 
 The internals are not configurable in Confluent Cloud (RF is fixed at 3, no broker access, ISR
 hidden, no unclean election). What you **can** declare are the topic-level settings from E1 and
-E3. On `cc-basic` — `orders.order-status.updated.v1` already exists there (owned by
+E3. On `cc-basic` — `billing.call-record.created.v1` already exists there (owned by
 `00-lab-setup`, where you would set `min.insync.replicas`), so this creates only the compacted
 current-state topic. Save as `08-kafka-internals/terraform/main.tf`:
 
@@ -457,8 +462,8 @@ locals {
 }
 
 # E1 + E3: compacted current-state topic with the durability floor (RF is always 3 in CC)
-resource "confluent_kafka_topic" "order_status_latest" {
-  topic_name       = "orders.order-status.latest.v1"
+resource "confluent_kafka_topic" "subscriber_balance_latest" {
+  topic_name       = "billing.subscriber-balance.latest.v1"
   partitions_count = 1
   config = {
     "cleanup.policy"        = "compact"
@@ -486,7 +491,7 @@ On-prem equivalent (CFK, for the same two topics; field names [V]):
 ```yaml
 apiVersion: platform.confluent.io/v1beta1
 kind: KafkaTopic
-metadata: { name: orders.order-status.latest.v1, namespace: confluent }
+metadata: { name: billing.subscriber-balance.latest.v1, namespace: confluent }
 spec:
   replicas: 3
   partitionCount: 1

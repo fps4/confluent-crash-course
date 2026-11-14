@@ -87,7 +87,7 @@ Confluent https://www.confluent.io/blog/kafka-queue-semantics-share-consumer-ga/
 | Internal | Architecture consequence |
 |---|---|
 | Per-record acquisition and ack | Work queues (task per message, slow variable processing) no longer force "partitions = max workers". |
-| No ordering | Not for order status or item scans where order per key matters. Use for jobs: image inference per camera snapshot, notification sending, enrichment calls. |
+| No ordering | Not for call records or cell alarms where order per key matters. Use for jobs: image inference per camera snapshot, notification sending, enrichment calls. |
 | Delivery count + archive, no DLQ topic yet | Failed records need an explicit "reject → publish to DLQ" in the consumer [V]. |
 | Lives in the Kafka log | Messages are replayable and retained like any topic, unlike a classic queue. |
 | Versus AMQ Artemis (ESB) | Artemis still has selectors, priorities, per-message TTL/scheduling, request-reply and XA. Share groups cover the plain competing-consumer case. |
@@ -135,7 +135,7 @@ Source: https://developer.confluent.io/courses/architecture/compaction/
 
 | Internal | Architecture consequence |
 |---|---|
-| Latest per key, forever | Good for **current state**: location master data, current order status, device registry, KTable sources. New consumers bootstrap state by reading the topic. |
+| Latest per key, forever | Good for **current state**: cell master data, current prepaid balance, device registry, KTable sources. New consumers bootstrap state by reading the topic. |
 | Active segment not compacted | Duplicates per key are normal for a while. Consumers must apply "last write wins" by key. |
 | Tombstones expire | A consumer offline longer than `delete.retention.ms` misses deletes → keeps stale keys. Set it longer than the longest allowed consumer downtime. |
 | GDPR erasure by tombstone | Erases in this topic only. Mirrors, tiered copies (after compaction runs), lake tables and backups need their own erasure. Prefer not to put raw PII in compacted topics; use pseudonymous keys + CSFLE. |
@@ -271,7 +271,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
   autonumber
-  participant App as Streams app (transactional.id = itemscan-enricher-0)
+  participant App as Streams app (transactional.id = alarm-enricher-0)
   participant TC as Transaction coordinator
   participant OUT as Output partition
   participant OFF as __consumer_offsets
