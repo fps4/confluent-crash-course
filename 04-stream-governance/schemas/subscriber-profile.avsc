@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "SubscriberProfile",
+  "namespace": "com.example.customers",
+  "doc": "One subscriber's profile. Synthetic personal data for the governance and encryption labs.",
+  "fields": [
+    {"name": "subscriberRef", "type": "string", "doc": "Pseudonymous reference, e.g. SUB-1001601"},
+    {"name": "customerName", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "msisdn", "type": "string", "doc": "Phone number", "confluent:tags": ["PII"]},
+    {"name": "email", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "nationalId", "type": "string", "confluent:tags": ["PII"]},
+    {"name": "plan", "type": "string", "doc": "PREPAID|POSTPAID|BUSINESS"},
+    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

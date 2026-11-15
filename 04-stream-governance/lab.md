@@ -39,16 +39,24 @@ helper functions (`a`, `sra`), ports and Terraform outputs.
 - `curl`, `jq`, Docker, Terraform ≥ 1.6, and the Cloud API key from `00-lab-setup` step 3 in
   `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`.
 - `00-lab-setup` applied: `local` running, `cc-basic` created, outputs available.
-- Start clean, because module 01 created the same topics: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
+- Start clean, because module 01 created the same topics:
+
+```bash
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh     # a, sra, LAB, DCA_ID, DCB_ID
+( cd "$LAB" && docker compose --profile mm2 down -v && docker compose up -d )
+lab_check                                                          # ends with "All good."
+```
+
+The export block (run it again in every new shell):
 
 ```bash
 # --- local (from 00-lab-setup) ---
-a()   { docker exec -i dc-a "$@"; }      # Kafka tools inside dc-a (internal bootstrap dc-a:29092)
-sra() { docker exec -i sr-a "$@"; }      # kafka-avro-console-* inside sr-a
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh     # a, sra, LAB
+GOV=$LAB/../04-stream-governance          # this module in the repo: schemas/, terraform/
 export A_SR=http://localhost:8081        # sr-a from the host
 
 # --- cc-basic (00-lab-setup terraform outputs) ---
-cd ../00-lab-setup/terraform
+cd "$LAB/terraform"
 export ENV_ID=$(terraform output -raw environment_id)
 export CLUSTER_ID=$(terraform output -raw basic_cluster_id)
 export SR_ID=$(terraform output -raw schema_registry_id)
@@ -61,9 +69,10 @@ The base already created `billing.call-record.created.v1` in `cc-basic` (PII-fre
 owned by `00-lab-setup`). This lab creates `customers.subscriber-profile.v1` and adds schemas,
 tags and catalog attributes to both.
 
-Create the two schema files once (used by every part).
+The two schema files are in the repo, in `04-stream-governance/schemas/` (`$GOV/schemas/`). Every
+part reads them from there, and so do this lab's Terraform and module 07. What is in them:
 
-`schemas/call-record-created.avsc`:
+`$GOV/schemas/call-record-created.avsc`:
 
 ```json
 {
@@ -82,7 +91,7 @@ Create the two schema files once (used by every part).
 }
 ```
 
-`schemas/subscriber-profile.avsc` (synthetic PII, for the tag demo):
+`$GOV/schemas/subscriber-profile.avsc` (synthetic PII, for the tag demo):
 
 ```json
 {
@@ -117,13 +126,13 @@ for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-va
     --data '{"compatibility":"BACKWARD_TRANSITIVE"}' $A_SR/config/$s | jq .
 done
 
-jq -n --rawfile s schemas/call-record-created.avsc \
+jq -n --rawfile s $GOV/schemas/call-record-created.avsc \
   '{schemaType:"AVRO", schema:$s,
     metadata:{properties:{owner:"billing-team", classification:"C1", major_version:"1"}}}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
     --data @- $A_SR/subjects/billing.call-record.created.v1-value/versions | jq .
 
-jq -n --rawfile s schemas/subscriber-profile.avsc \
+jq -n --rawfile s $GOV/schemas/subscriber-profile.avsc \
   '{schemaType:"AVRO", schema:$s,
     metadata:{properties:{owner:"care-team", classification:"C3", major_version:"1"}}}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
@@ -146,11 +155,11 @@ A compatible change — add an optional field with a default:
 
 ```bash
 jq '.fields += [{"name":"roamingPartner","type":["null","string"],"default":null,"doc":"Visited network, if roaming"}]' \
-  schemas/call-record-created.avsc > /tmp/cr-v2.avsc
+  $GOV/schemas/call-record-created.avsc > /tmp/cr-v2.avsc
 
 jq -n --rawfile s /tmp/cr-v2.avsc '{schema:$s}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' --data @- \
-  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions/latest?verbose=true" | jq .
+  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions?verbose=true" | jq .
 ```
 
 Expected: `{"is_compatible": true, "messages": []}`.
@@ -158,18 +167,19 @@ Expected: `{"is_compatible": true, "messages": []}`.
 An incompatible change — add a required field without a default:
 
 ```bash
-jq '.fields += [{"name":"region","type":"string"}]' schemas/call-record-created.avsc > /tmp/cr-bad.avsc
+jq '.fields += [{"name":"region","type":"string"}]' $GOV/schemas/call-record-created.avsc > /tmp/cr-bad.avsc
 jq -n --rawfile s /tmp/cr-bad.avsc '{schema:$s}' \
 | curl -s -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' --data @- \
-  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions/latest?verbose=true" | jq .
+  "$A_SR/compatibility/subjects/billing.call-record.created.v1-value/versions?verbose=true" | jq .
 ```
 
 Expected: `"is_compatible": false` and a message like `READER_FIELD_MISSING_DEFAULT_VALUE` for
 `region`. Trying to register it returns HTTP **409**.
 
-Note: `versions/latest` checks only against the latest version. For a `*_TRANSITIVE` subject the
-registry checks all versions on **registration** anyway; in CI, call `.../versions` (no `latest`)
-to test against all versions [V].
+Note: these calls use `.../versions` (no version number), which checks the way registration does:
+against all versions for a `*_TRANSITIVE` subject, against the latest otherwise (SR API reference).
+`.../versions/latest` checks only the latest version, so a CI gate built on it can pass a schema
+that registration then refuses. With one version registered, as here, both give the same answer.
 
 ## A3. Broker-side schema ID validation (Confluent Server)
 
@@ -241,12 +251,12 @@ for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-va
     --data '{"compatibility":"BACKWARD_TRANSITIVE"}' $SR_URL/config/$s | jq -c .
 done
 
-jq -n --rawfile s schemas/call-record-created.avsc \
+jq -n --rawfile s $GOV/schemas/call-record-created.avsc \
   '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"billing-team",classification:"C1",major_version:"1"}}}' \
 | curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
   --data @- $SR_URL/subjects/billing.call-record.created.v1-value/versions | jq .
 
-jq -n --rawfile s schemas/subscriber-profile.avsc \
+jq -n --rawfile s $GOV/schemas/subscriber-profile.avsc \
   '{schemaType:"AVRO", schema:$s, metadata:{properties:{owner:"care-team",classification:"C3",major_version:"1"}}}' \
 | curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
   --data @- $SR_URL/subjects/customers.subscriber-profile.v1-value/versions | jq .
@@ -291,12 +301,16 @@ curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/basic?type=kafka_topic&tag=DataPr
   | jq -r '.entities[] | [.attributes.qualifiedName, (.classificationNames|join(","))] | @tsv'
 
 # prefix search by name (REST is prefix-only)
-curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/basic?types=kafka_topic&query=customers" \
+curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/basic?type=kafka_topic&query=customers" \
   | jq -r '.entities[].attributes.qualifiedName'
 ```
 
 Expected: four PII fields (`...SubscriberProfile.customerName`, `...msisdn`, `...email`,
 `...nationalId`), two DataProduct topics with their classification tag, one `customers` topic.
+
+All three queries use `type=`. The catalog REST docs use both spellings in their examples: `type=`
+with `tag=` (and with `query=` for fields), `types=kafka_topic` when they list topics or search
+topics by name. If the name search returns nothing, retry it with `types=` [V].
 
 Exercise: write the query a CI gate would run — "topics tagged `Confidential` whose value schema
 has PII fields" — and decide which of them may go into a cluster-link filter.
@@ -307,7 +321,7 @@ Run a producer and a consumer within the same 10 minutes:
 
 ```bash
 confluent kafka topic produce billing.call-record.created.v1 \
-  --value-format avro --schema schemas/call-record-created.avsc \
+  --value-format avro --schema $GOV/schemas/call-record-created.avsc \
   --schema-registry-api-key ${SR_AUTH%%:*} --schema-registry-api-secret ${SR_AUTH#*:}
 # paste a few JSON lines like the one in A3, then Ctrl-D
 
@@ -325,8 +339,32 @@ the schema if it is new — set `--schema-id` instead if your CLI supports it.]
 ## B7. Data Portal (browse only on Basic)
 
 Console → **Data Portal**. Search `billing`, open the topic. Expected: description, owner,
-tags, schema, lineage. The **Request access** button is missing or disabled on a Basic cluster
-[V]. That is Part D.
+tags, schema, lineage. The **Request access** button is missing or disabled on a Basic cluster:
+the Data Portal docs exclude only the access-request workflow for Basic topics, not browsing
+[V: read 2026-11-15, not yet seen on screen]. Requests are Part D.
+
+## B8. Rules are refused on Essentials
+
+`crash-course` is on Essentials, which has no data-contract rules. Try to register a version with a
+CEL rule (the same request Part C makes on Advanced) and see the package boundary for free:
+
+```bash
+jq -n --rawfile s $GOV/schemas/call-record-created.avsc '{
+  schemaType:"AVRO", schema:$s,
+  metadata:{properties:{owner:"billing-team",classification:"C1",major_version:"1"}},
+  ruleSet:{domainRules:[{
+    name:"recordIdFormat", kind:"CONDITION", type:"CEL", mode:"WRITE",
+    expr:"message.recordId.matches(\"^CDR-[0-9]{7}$\")",
+    onFailure:"DLQ",
+    params:{"dlq.topic":"billing.call-record.created.v1.dlq"}}]}}' \
+| curl -s -w '\nHTTP %{http_code}\n' -u $SR_AUTH -X POST -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+  --data @- $SR_URL/subjects/billing.call-record.created.v1-value/versions
+curl -s -u $SR_AUTH $SR_URL/subjects/billing.call-record.created.v1-value/versions
+```
+
+Expected: an error body and a 4xx status instead of an `id`, and the version list unchanged
+[V: status code and message not yet observed]. If you get an `id` back instead, read
+`versions/latest` and note whether `ruleSet` was kept or silently dropped; either way, record it.
 
 # Part C — optional, paid: Advanced governance in a throw-away environment
 
@@ -340,8 +378,8 @@ confluent kafka cluster create cc-adv --cloud azure --region westeurope --type b
 CLUSTER_ID=$(jq -r .id /tmp/adv-lkc.json); confluent kafka cluster use $CLUSTER_ID
 SA_ID=$(confluent iam service-account list -o json | jq -r '.[] | select(.name=="sa-crash-admin") | .id')
 confluent iam rbac role-binding create --principal User:$SA_ID --role EnvironmentAdmin --environment $ADV_ENV
-SR_ID=$(confluent schema-registry cluster describe -o json | jq -r '.cluster_id // .id')        # field [V]
-SR_URL=$(confluent schema-registry cluster describe -o json | jq -r '.endpoint_url // .url')    # field [V]
+confluent schema-registry cluster describe -o json | tee /tmp/adv-src.json
+SR_ID=$(jq -r .cluster /tmp/adv-src.json); SR_URL=$(jq -r .endpoint_url /tmp/adv-src.json)   # field names as in module 01 [V]
 confluent api-key create --resource $SR_ID --service-account $SA_ID -o json > /tmp/adv-sr.json
 export SR_AUTH="$(jq -r .api_key /tmp/adv-sr.json):$(jq -r .api_secret /tmp/adv-sr.json)"
 confluent api-key create --resource $CLUSTER_ID --service-account $SA_ID -o json > /tmp/adv-kafka.json
@@ -374,15 +412,17 @@ curl -s -u $SR_AUTH "$SR_URL/catalog/v1/search/attribute?type=kafka_topic&attrNa
   | jq -r '.entities[].attributes.qualifiedName'
 ```
 
-Note: the tag `DataProduct` and the business metadata `DataProduct` share a name here for
-readability. In a real taxonomy pick distinct names (e.g. tag `DataProduct`, metadata
-`ProductContract`) [V: name collision rules not checked].
+Note: the tag `DataProduct` and the business metadata `DataProduct` share a name here, in the CLI
+part and in Terraform alike. The catalog has an Apache Atlas shape, and Atlas keeps tags and business
+metadata in one type namespace, so the second definition may be refused [V: name collision rules not
+checked]. If it is, give the business metadata another name in both places and in the search's
+`attrName`.
 
 A data-contract **CEL rule** (runs in the serializer, so test it with a client that has the rule
 executor on its classpath, e.g. the Java Avro serializer ≥ 7.4) [V]:
 
 ```bash
-jq -n --rawfile s schemas/call-record-created.avsc '{
+jq -n --rawfile s $GOV/schemas/call-record-created.avsc '{
   schemaType:"AVRO", schema:$s,
   metadata:{properties:{owner:"billing-team",classification:"C1",major_version:"1"}},
   ruleSet:{domainRules:[{
@@ -394,7 +434,7 @@ jq -n --rawfile s schemas/call-record-created.avsc '{
   --data @- $SR_URL/subjects/billing.call-record.created.v1-value/versions | jq .
 ```
 
-Expected: a new version with `ruleSet`. On Essentials the same call fails (rules need Advanced).
+Expected: a new version with `ruleSet`. The same request was refused on Essentials in B8.
 
 # Part D — optional, paid: Data Portal access request
 
@@ -606,7 +646,7 @@ variable "advanced" {
 
 resource "confluent_business_metadata" "contract" {
   count       = var.advanced ? 1 : 0
-  name        = "ProductContract"
+  name        = "DataProduct"   # same name as the CLI part; see the note in Part C
   description = "Data product contract fields"
   attribute_definition { name = "domain" }
   attribute_definition { name = "sla" }
@@ -651,7 +691,7 @@ type, mode, expr, on_failure, params). Advanced only. Do not leave empty `metada
 Run:
 
 ```bash
-cd 04-stream-governance/terraform
+cd "$GOV/terraform"
 terraform init && terraform plan -out tf.plan && terraform apply tf.plan
 ```
 
@@ -674,11 +714,16 @@ The last check is the point of "Git is the source of truth": the console edit is
 
 # Teardown
 
+In a fresh shell, run the export block from Prerequisites first (helpers, `$GOV`, the cc-basic
+variables). After Part C, run it again: it points `CLUSTER_ID`, `SR_URL` and `SR_AUTH` back at
+`cc-basic`.
+
 ```bash
 # Terraform path
-cd 04-stream-governance/terraform && terraform destroy
+cd "$GOV/terraform" && terraform destroy
 
 # CLI path (if you did not use Terraform). Keep billing.call-record.created.v1: 00-lab-setup owns it.
+confluent environment use $ENV_ID && confluent kafka cluster use $CLUSTER_ID   # Part C switched the CLI
 confluent kafka topic delete customers.subscriber-profile.v1 --force
 for s in billing.call-record.created.v1-value customers.subscriber-profile.v1-value; do
   curl -s -u $SR_AUTH -X DELETE "$SR_URL/subjects/$s"                  # soft delete
@@ -689,7 +734,8 @@ for t in PII Public Confidential DataProduct; do
 done
 
 # Advanced and Standard extras: delete the whole environment (only way to drop Advanced)
-confluent environment delete $ADV_ENV --force
+ADV_ENV=$(confluent environment list -o json | jq -r '.[] | select(.name=="crash-course-adv") | .id')
+[ -n "$ADV_ENV" ] && confluent environment delete $ADV_ENV --force
 
 # local
 a kafka-topics --bootstrap-server dc-a:29092 --delete --topic billing.call-record.created.v1

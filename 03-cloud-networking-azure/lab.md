@@ -77,13 +77,15 @@ Expected: a wildcard SAN for the cluster domain. That wildcard is how all broker
 confluent api-key create --resource $CC_BASIC --description "lab03 public" -o json > /tmp/lab03-key.json
 confluent api-key use $(jq -r .api_key /tmp/lab03-key.json) --resource $CC_BASIC
 
-confluent kafka topic create billing.call-record.created.v1 --partitions 3
+# a throwaway topic: the call-record topic carries Avro for module 04, so plain JSON stays out of it
+confluent kafka topic create lab03.connectivity-test --partitions 1
 printf 'SUB-1001001:{"recordId":"CDR-1001001","recordType":"VOICE"}\nSUB-1001002:{"recordId":"CDR-1001002","recordType":"DATA"}\n' | \
-  confluent kafka topic produce billing.call-record.created.v1 --parse-key --delimiter ":"
-confluent kafka topic consume billing.call-record.created.v1 -b --print-key
+  confluent kafka topic produce lab03.connectivity-test --parse-key --delimiter ":"
+confluent kafka topic consume lab03.connectivity-test -b --print-key
+confluent kafka topic delete lab03.connectivity-test --force
 ```
 
-Expected: the two records printed with their keys. Stop the consumer with Ctrl-C. (Wait a minute after creating the API key; new keys take a short time to propagate.)
+Expected: the two records printed with their keys. Stop the consumer with Ctrl-C before the delete. (Wait a minute after creating the API key; new keys take a short time to propagate.)
 
 ### A3. See the broker list the client gets
 
@@ -185,20 +187,58 @@ confluent iam ip-group delete $IPG
 Purpose: see the on-prem problem with your own eyes.
 
 ```bash
-docker compose -f ../00-lab-setup/docker-compose.yml exec dc-a \
-  kafka-configs --bootstrap-server localhost:9092 --describe --entity-type brokers --entity-name 1 --all \
-  | grep -E 'listeners|advertised'
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh     # a, LAB
+a kafka-configs --bootstrap-server dc-a:29092 --describe --entity-type brokers --entity-name 1 --all \
+  | grep -E '^ *(advertised\.)?listeners='
 ```
 
-Expected: `listeners` and `advertised.listeners` with one or more named listeners (for example an internal Docker name and a `localhost` one). Exact names depend on `00-lab-setup`.
+Expected (the values from `00-lab-setup/docker-compose.yml`): two listeners for clients. `PLAINTEXT` listens on `dc-a:29092` and advertises `dc-a:29092`, for containers on the Docker network. `PLAINTEXT_HOST` listens on `0.0.0.0:9092` and advertises `localhost:9092`, for clients on the laptop.
+
+```
+  advertised.listeners=PLAINTEXT://dc-a:29092,PLAINTEXT_HOST://localhost:9092 sensitive=false synonyms={…}
+  listeners=PLAINTEXT://dc-a:29092,CONTROLLER://dc-a:29093,PLAINTEXT_HOST://0.0.0.0:9092 sensitive=false synonyms={…}
+```
+
+Now bootstrap three times from inside the container and print the broker address the client gets back:
 
 ```bash
-kafka-broker-api-versions --bootstrap-server localhost:<dc-a host port> | grep -E '^[^ ]+:[0-9]+ ' | cut -d' ' -f1
+for boot in dc-a:29092 localhost:9092 dc-a:9092; do
+  echo "typed $boot -> got $(a kafka-broker-api-versions --bootstrap-server $boot | grep -E '^[^ ]+:[0-9]+ ' | cut -d' ' -f1)"
+done
 ```
 
-Expected: the **advertised** address, not necessarily the address you typed. Now imagine an Azure client: it would need each broker's advertised name to resolve and route from Azure, a listener for that zone, and that name in the certificate. With 6 brokers on OpenShift that is 6 routes, 6 DNS names and 6 firewall entries per zone, changed on every broker move. That is the argument in `notes.md` §2.11.
+Expected (tested on CP 8.4.0, 2026-11-15):
 
-Optional: change the `advertised.listeners` host for the external listener in a copy of the compose file to a name your laptop cannot resolve, restart, and watch the client bootstrap succeed and then fail with "could not be established. Node may not be available". That is the classic symptom.
+```
+typed dc-a:29092 -> got dc-a:29092
+typed localhost:9092 -> got localhost:9092
+typed dc-a:9092 -> got localhost:9092
+```
+
+The broker answers with the **advertised** address of the listener the connection arrived on, not with what you typed. The first two lines only look like echoes because each listener advertises the name used for it here. The third line shows the real rule: `dc-a:9092` reaches the `PLAINTEXT_HOST` listener, so the client gets back `localhost:9092`, and that is the address it connects to for everything after bootstrap. Now imagine an Azure client: it would need each broker's advertised name to resolve and route from Azure, a listener for that zone, and that name in the certificate. With 6 brokers on OpenShift that is 6 routes, 6 DNS names and 6 firewall entries per zone, changed on every broker move. That is the argument in `notes.md` §2.11.
+
+**Optional (5 min; restarts `dc-a`): an advertised name nobody can resolve.** Point the `PLAINTEXT_HOST` listener's advertised name at a host under `.invalid`, a top-level domain that never resolves. `PLAINTEXT` stays as it is, so Schema Registry and the other labs are not affected.
+
+```bash
+cat > $LAB/work/lab03-advertised.yml <<'EOF'
+services:
+  dc-a:
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://dc-a:29092,PLAINTEXT_HOST://broker-1.dc-a.invalid:9092"
+EOF
+docker compose -f $LAB/docker-compose.yml -f $LAB/work/lab03-advertised.yml up -d dc-a
+sleep 20
+a kafka-broker-api-versions --bootstrap-server localhost:9092 2>&1 | grep -iE 'invalid|error|warn' | head -5
+```
+
+Expected [V: exact log lines not yet observed]: the bootstrap connection to `localhost:9092` succeeds and returns `broker-1.dc-a.invalid:9092`; the client then fails to connect to that name (an `UnknownHostException` warning, then an error for node 1 instead of its API list). Bootstrap worked, the client still failed: that is the classic symptom of a wrong advertised listener.
+
+Put `dc-a` back from the base compose file:
+
+```bash
+docker compose -f $LAB/docker-compose.yml up -d --force-recreate dc-a
+lab_check                                                          # ends with "All good."
+```
 
 ---
 

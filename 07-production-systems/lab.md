@@ -11,46 +11,88 @@ subtitle: A "no schema, no topic" golden Terraform module, a GitHub Actions CI s
 
 | # | Deliverable | Environment |
 |---|---|---|
-| 1 | Terraform **golden module** `data-product`: topic + schema + compatibility + tags + owner + role bindings, refuses to create a topic without a schema, refuses PII in a C1/C2 product | `cc-basic` |
-| 2 | GitHub Actions **CI sketch**: fmt/validate, policy, SR compatibility check, plan on PR, apply on merge | written; runs against `cc-basic` |
+| 1 | Terraform **golden module** `data-product`: topic + schema + compatibility + tags + owner + role bindings, refuses to create a topic without a schema, refuses PII in a C1/C2 product | `cc-std-lab07` |
+| 2 | GitHub Actions **CI sketch**: fmt/validate, policy, SR compatibility check, plan on PR, apply on merge | written; `validate` and `schema-compat` run in a scratch GitHub repo, `plan`/`apply` need a remote state backend |
 | 3 | A **quota** that visibly throttles a producer | `local` (CC Basic has no client quotas [V]) |
 | 4 | **Consumer lag** monitoring: CLI, then the CC Metrics API | `local` + `cc-basic` |
 | 5 | The same data product as **CFK CRs + ArgoCD Application** | written only (no OpenShift in the lab) |
 
 Uses `../00-lab-setup/` (`local` dc-a, `cc-basic`; optional `cc-paid` Dedicated from the
-paid session for a real CC quota). The three PII-free example topics in `cc-basic` are owned by
-`00-lab-setup`, so the golden module creates two **new** data products:
+paid session for a real CC quota) and a temporary Standard cluster:
+
+`cc-std-lab07` = a **Standard** cluster on Azure `westeurope` in environment `crash-course`,
+created at the start of the lab and deleted in teardown, the same pattern as module 06's
+`cc-std-lab06`. Basic has no Kafka RBAC (module 06 notes §2.5), and steps 1 and 1b bind roles on
+topics and consumer groups. About 1–2 USD for 2 hours [V]. Steps 3 and 4a run on `local`, step 4b
+on `cc-basic` (the Metrics API needs no Kafka RBAC).
+
+The golden module creates two **new** data products on `cc-std-lab07`:
 `network.cell-config.changed.v1` (C1) and `network.cell-load.forecast.v1` (C2).
-The PII schema for the negative test comes from `../04-stream-governance/schemas/`.
+The PII schema for the negative test is `04-stream-governance/schemas/subscriber-profile.avsc`,
+which is in the repo, so you do not need your files from module 04.
 
 # Prerequisites
 
-- Lab 04 Part B understood (catalog qualified names, tags).
-- `confluent` CLI v4.x, Terraform ≥ 1.6, `jq`, `conftest` (optional), Docker.
-- A Cloud API key for `sa-crash-admin` in `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`.
-- For step 4 (CC part): a Cloud API key with **MetricsViewer** (a cluster-scoped key gives an auth error).
+- Lab 04 Part B understood (catalog qualified names, tags). Its tag definitions must exist (checked below).
+- `confluent` CLI v4.x **logged in as your own user (OrganizationAdmin)**, as in module 06: steps 1
+  and 4b create service accounts and a MetricsViewer binding, and `sa-crash-admin` only has
+  EnvironmentAdmin (`00-lab-setup`).
+- Terraform ≥ 1.6, `jq`, `conftest` (optional; needed for the delete-guard test in step 2), Docker.
+- For Terraform: the Cloud API key of `sa-terraform` (OrganizationAdmin, `00-lab-setup` step 3) in
+  `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`. The module creates service accounts,
+  which `sa-crash-admin` cannot.
+- For step 4b: a Cloud API key with **MetricsViewer** (a cluster-scoped key gives an auth error); step 4b creates it.
 - Start clean, because modules 02 and 06 created the same topic on `dc-a`: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
 
 ```bash
 a() { docker exec -i dc-a "$@"; }                 # 00-lab-setup helper; internal bootstrap dc-a:29092
 cd ../00-lab-setup/terraform
 export ENV_ID=$(terraform output -raw environment_id)
-export CLUSTER_ID=$(terraform output -raw basic_cluster_id)
+export BASIC_ID=$(terraform output -raw basic_cluster_id)      # cc-basic: step 4b
 export SR_ID=$(terraform output -raw schema_registry_id)
+export SR_URL=$(terraform output -raw schema_registry_rest_endpoint)
+export SR_AUTH="$(terraform output -raw sa_sr_api_key):$(terraform output -raw sa_sr_api_secret)"
 cd -
+
+# cc-std-lab07: Standard, because Basic has no Kafka RBAC. Deleted in teardown.
+confluent environment use $ENV_ID
+confluent kafka cluster create cc-std-lab07 --cloud azure --region westeurope --type standard -o json | tee /tmp/std07.json
+export CLUSTER_ID=$(jq -r .id /tmp/std07.json)                 # steps 1, 1b, verification
+export TF_VAR_cluster_id=$CLUSTER_ID                           # read by live/cc-std-lab07
+
+# module 04's tag definitions: expect PII, Public, Confidential, DataProduct
+curl -s -u $SR_AUTH $SR_URL/catalog/v1/types/tagdefs | jq -r '.[].name'
+```
+
+If you tore down module 04 (its teardown deletes the tags), recreate them with module 04 B2:
+
+```bash
+curl -s -u $SR_AUTH -X POST -H 'Content-Type: application/json' \
+  --data '[
+    {"entityTypes":["cf_entity"],"name":"PII","description":"Personal data (GDPR)"},
+    {"entityTypes":["cf_entity"],"name":"Public","description":"Classification C1: may leave the DC, may be shared"},
+    {"entityTypes":["cf_entity"],"name":"Confidential","description":"Classification C3: minimised or encrypted before it leaves the DC"},
+    {"entityTypes":["cf_entity"],"name":"DataProduct","description":"Published, owned, contract-backed stream"}
+  ]' $SR_URL/catalog/v1/types/tagdefs | jq '.[].name'
 ```
 
 # 1. Golden module — CLI first (what the module automates)
 
-Doing it by hand shows how many steps a team would skip:
+Doing it by hand shows how many steps a team would skip. On `cc-std-lab07`, logged in as your own
+user (creating service accounts needs OrganizationAdmin):
 
 ```bash
 confluent environment use $ENV_ID && confluent kafka cluster use $CLUSTER_ID
-confluent iam service-account create sa-billing-producer --description "lab07 producer" -o json | tee /tmp/sa-p.json
-confluent iam service-account create sa-analytics-consumer       --description "lab07 consumer" -o json | tee /tmp/sa-c.json
+confluent iam service-account create sa-lab07-billing-producer   --description "lab07 producer (CLI)" -o json | tee /tmp/sa-p.json
+confluent iam service-account create sa-lab07-analytics-consumer --description "lab07 consumer (CLI)" -o json | tee /tmp/sa-c.json
 P=$(jq -r .id /tmp/sa-p.json); C=$(jq -r .id /tmp/sa-c.json)
 
-# 1 schema first ("no schema, no topic"), 2 topic, 3 tags/owner (lab 04 B4), 4 role bindings:
+# 1 schema first ("no schema, no topic"): the subject is environment-wide, from lab 04 B3. If you
+#   tore lab 04 down, register ../04-stream-governance/schemas/call-record-created.avsc again as in B3.
+curl -s -u $SR_AUTH $SR_URL/subjects/billing.call-record.created.v1-value/versions/latest | jq '{id, version}'
+# 2 topic (cc-std-lab07 is new, so it is not there yet)
+confluent kafka topic create billing.call-record.created.v1 --partitions 3
+# 3 tags/owner (lab 04 B4 with this $CLUSTER_ID), 4 role bindings:
 confluent iam rbac role-binding create --principal User:$P --role DeveloperWrite \
   --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID \
   --resource Topic:billing.call-record.created.v1
@@ -66,8 +108,8 @@ confluent iam rbac role-binding create --principal User:$C --role DeveloperRead 
 ```
 
 Expected: each command prints the binding. Count the steps: about 12 per data product, each one a
-chance to forget the owner, the tag or the subject read grant. Delete these by hand before
-step 1b, or let Terraform import them.
+chance to forget the owner, the tag or the subject read grant. Step 1b uses its own service
+accounts and topics, so nothing here collides with it; teardown deletes these two accounts.
 
 ## 1b. The module
 
@@ -76,7 +118,7 @@ Layout (create under `07-production-systems/terraform/`):
 ```
 terraform/
   modules/data-product/   main.tf  variables.tf  outputs.tf
-  live/cc-basic/          main.tf  versions.tf
+  live/cc-std-lab07/      main.tf  versions.tf
   policy/                 data_product.rego
 ```
 
@@ -302,7 +344,7 @@ output "schema_id"  { value = confluent_schema.this.schema_identifier }
 output "class_tag"  { value = local.class_tag }
 ```
 
-`live/cc-basic/versions.tf`:
+`live/cc-std-lab07/versions.tf`:
 
 ```hcl
 terraform {
@@ -315,20 +357,25 @@ terraform {
 provider "confluent" {}
 ```
 
-`live/cc-basic/main.tf`:
+`live/cc-std-lab07/main.tf`:
 
 ```hcl
 data "terraform_remote_state" "base" {
   backend = "local"
   config  = { path = "${path.module}/../../../../00-lab-setup/terraform/terraform.tfstate" }
 }
+variable "cluster_id" {
+  type        = string
+  description = "cc-std-lab07 (Standard; Basic has no Kafka RBAC), created with the CLI at the start of the lab"
+}
+
 locals {
   base       = data.terraform_remote_state.base.outputs
   env_id     = local.base.environment_id
-  cluster_id = local.base.basic_cluster_id
+  cluster_id = var.cluster_id
 }
 
-# data sources only for the RBAC CRN / resource name (not in the base outputs)
+# data sources for the REST endpoint, RBAC CRN and SR resource name (not in the base outputs)
 data "confluent_kafka_cluster" "this" {
   id = local.cluster_id
   environment { id = local.env_id }
@@ -337,10 +384,27 @@ data "confluent_schema_registry_cluster" "this" {
   environment { id = local.env_id }
 }
 
-resource "confluent_service_account" "producer" { display_name = "sa-billing-producer" }
-resource "confluent_service_account" "consumer" { display_name = "sa-analytics-consumer" }
+# The base has a Kafka key for cc-basic only: give sa-crash-admin (EnvironmentAdmin) one for this cluster
+resource "confluent_api_key" "admin" {
+  display_name = "sa-crash-admin-cc-std-lab07"
+  owner {
+    id          = local.base.service_account_id
+    api_version = "iam/v2"
+    kind        = "ServiceAccount"
+  }
+  managed_resource {
+    id          = data.confluent_kafka_cluster.this.id
+    api_version = data.confluent_kafka_cluster.this.api_version
+    kind        = data.confluent_kafka_cluster.this.kind
+    environment { id = local.env_id }
+  }
+}
 
-# Tag definitions are platform-owned; lab 04 creates PII/Public/Confidential/DataProduct.
+resource "confluent_service_account" "producer" { display_name = "sa-lab07-network-producer-tf" }
+resource "confluent_service_account" "consumer" { display_name = "sa-lab07-analytics-consumer-tf" }
+
+# Tag definitions are platform-owned; lab 04 B2 creates PII/Public/Confidential/DataProduct
+# (recreate them as in Prerequisites if you tore lab 04 down).
 # Add Internal and Restricted here if they do not exist yet.
 resource "confluent_tag" "extra" {
   for_each = toset(["Internal", "Restricted"])
@@ -357,10 +421,10 @@ locals {
   platform = {
     environment_id   = local.env_id
     kafka_cluster_id = local.cluster_id
-    kafka_rest       = local.base.basic_rest_endpoint
+    kafka_rest       = data.confluent_kafka_cluster.this.rest_endpoint
     kafka_rbac_crn   = data.confluent_kafka_cluster.this.rbac_crn
-    kafka_api_key    = local.base.sa_kafka_basic_api_key
-    kafka_api_secret = local.base.sa_kafka_basic_api_secret
+    kafka_api_key    = confluent_api_key.admin.id
+    kafka_api_secret = confluent_api_key.admin.secret
     sr_id            = local.base.schema_registry_id
     sr_rest          = local.base.schema_registry_rest_endpoint
     sr_resource_name = data.confluent_schema_registry_cluster.this.resource_name
@@ -401,7 +465,7 @@ module "load_forecast" {
 }
 ```
 
-`live/cc-basic/schemas/cell-config-changed.avsc`:
+`live/cc-std-lab07/schemas/cell-config-changed.avsc`:
 
 ```json
 {
@@ -417,7 +481,7 @@ module "load_forecast" {
 }
 ```
 
-`live/cc-basic/schemas/cell-load-forecast.avsc`:
+`live/cc-std-lab07/schemas/cell-load-forecast.avsc`:
 
 ```json
 {
@@ -435,13 +499,15 @@ module "load_forecast" {
 Run and try to break it:
 
 ```bash
-cd 07-production-systems/terraform/live/cc-basic
-terraform init && terraform plan -out tf.plan && terraform apply tf.plan
+cd 07-production-systems/terraform/live/cc-std-lab07
+terraform init && terraform plan -out tf.plan && terraform apply tf.plan     # cluster_id from TF_VAR_cluster_id
 ```
 
 Expected: 2 topics, 2 schemas, 2 subject configs, 4 tag bindings, 2 entity-attribute resources,
-10 role bindings, 2 service accounts, 2 tags. Tag definitions `Public`, `Confidential`,
-`DataProduct` must exist (lab 04, or add them to `confluent_tag.extra`).
+10 role bindings, 2 service accounts, 2 tags, 1 API key. Tag definitions `Public`, `Confidential`,
+`DataProduct` must exist (lab 04 B2, recreated in Prerequisites, or add them to `confluent_tag.extra`).
+If a topic fails with an authentication error, the new API key has not propagated yet: run
+`apply` again [V].
 
 Negative tests (each must fail at `plan`):
 
@@ -460,19 +526,20 @@ Negative tests (each must fail at `plan`):
 name: data-products
 on:
   pull_request:
-    paths: ["terraform/**", "schemas/**"]
+    paths: ["terraform/**", "schemas/**", "products.yaml"]
   push:
     branches: [main]
-    paths: ["terraform/**", "schemas/**"]
+    paths: ["terraform/**", "schemas/**", "products.yaml"]
 
 permissions:
   contents: read
   pull-requests: write
 
 env:
-  TF_DIR: terraform/live/cc-basic
+  TF_DIR: terraform/live/cc-std-lab07
   CONFLUENT_CLOUD_API_KEY: ${{ secrets.CC_API_KEY }}
   CONFLUENT_CLOUD_API_SECRET: ${{ secrets.CC_API_SECRET }}
+  TF_VAR_cluster_id: ${{ vars.CLUSTER_ID }}
 
 jobs:
   validate:
@@ -500,7 +567,7 @@ jobs:
             # lint: every field has doc; new optional fields have a default
             jq -e '[.fields[] | select(.doc == null)] | length == 0' "$f" >/dev/null \
               || { echo "::error file=$f::every field needs a doc"; exit 1; }
-            subject="$(yq -r ".products[] | select(.schema == \"$f\") | .name" products.yaml)-value"  # map file -> subject [your convention]
+            subject="$(yq -r ".products[] | select(.schema == \"$f\") | .name" products.yaml)-value"  # map file -> subject (products.yaml below)
             code=$(curl -s -o /tmp/r.json -w '%{http_code}' -u "$SR_AUTH" \
               -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
               --data "$(jq -n --rawfile s "$f" '{schema:$s}')" \
@@ -537,7 +604,7 @@ jobs:
     needs: [validate, schema-compat]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: prod          # required reviewers / protection rules
-    concurrency: tf-cc-basic   # one apply at a time per state
+    concurrency: tf-cc-std-lab07   # one apply at a time per state
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -547,6 +614,33 @@ jobs:
 ```
 
 Action and tool versions are examples; pin them by SHA in a real repo [V].
+
+`products.yaml` (repo root, next to `terraform/`): one entry per data product, with the same inputs
+as the module calls in `live/cc-std-lab07/main.tf`. The `schema-compat` job uses it to map a
+changed `.avsc` to its subject; in a real repo the module calls would be generated from it.
+
+```yaml
+products:
+  - name: network.cell-config.changed.v1
+    schema: terraform/live/cc-std-lab07/schemas/cell-config-changed.avsc
+    classification: C1
+    owner: Network team
+    owner_email: cells-platform@example.org
+    partitions: 6
+    consumer_group_prefix: analytics-
+  - name: network.cell-load.forecast.v1
+    schema: terraform/live/cc-std-lab07/schemas/cell-load-forecast.avsc
+    classification: C2
+    owner: Network team
+    owner_email: cells-platform@example.org
+    consumer_group_prefix: analytics-
+```
+
+To see it run, push `terraform/`, `products.yaml` and `.github/` to a scratch GitHub repo with the
+variable `SR_URL` and the secrets `SR_API_KEY` / `SR_API_SECRET` (the SR key from `00-lab-setup`).
+`validate` and `schema-compat` then run as written. `plan` and `apply` also need `CC_API_KEY` /
+`CC_API_SECRET`, the variable `CLUSTER_ID` and the base state in a remote backend: the local
+`terraform_remote_state` path does not exist on a runner, so here they stay a sketch.
 
 `terraform/policy/data_product.rego` (Rego v1):
 
@@ -578,6 +672,20 @@ deny contains msg if {
 
 The second rule matters: a renamed resource in Terraform is a **delete + create** of the topic,
 i.e. data loss. Block it in CI.
+
+Negative test for the delete rule (needs `conftest`): rename a module, which Terraform plans as a
+delete of the old topic and a create of the new one. Nothing is applied.
+
+```bash
+cd 07-production-systems/terraform/live/cc-std-lab07
+sed -i.bak 's/module "load_forecast"/module "load_forecast_v2"/' main.tf
+terraform plan -out rename.plan && terraform show -json rename.plan > rename.json
+conftest test rename.json -p ../../policy
+mv main.tf.bak main.tf && rm rename.plan rename.json
+```
+
+Expected: `FAIL - rename.json - main - topic network.cell-load.forecast.v1 would be deleted: needs a
+separate, approved decommission PR`, and `conftest` exits non-zero.
 
 # 3. Quota — local
 
@@ -614,7 +722,8 @@ Expected: baseline shows tens of MB/s; with the quota ≈ 1 MB/s (≈ 1,000 reco
 see ≈ 2 MB/s.
 
 Also try `request_percentage=10` (share of broker I/O and network thread time). Remove with
-`--delete-config producer_byte_rate,consumer_byte_rate`.
+`--delete-config producer_byte_rate,consumer_byte_rate`, plus `request_percentage` if you set it;
+teardown removes all three.
 
 The same in Confluent Cloud needs an **Enterprise, Freight or Dedicated** cluster. On the paid
 day, `cc-paid` (Dedicated, from `00-lab-setup`) works; otherwise read it only:
@@ -668,13 +777,29 @@ Datadog do) [V].
 
 ## 4b. Confluent Cloud, Metrics API
 
-Produce and consume a little on `cc-basic` (lab 04 B6), with consumer group `analytics-lab07`, then:
+Back on `cc-basic` (no Kafka RBAC needed here): `confluent kafka cluster use $BASIC_ID`, then
+produce and consume a little as in lab 04 B6 (schema file
+`../04-stream-governance/schemas/call-record-created.avsc`), with consumer group `analytics-lab07`.
+
+A Cloud API key with MetricsViewer, as your own user (creating a service account needs
+OrganizationAdmin):
+
+```bash
+confluent iam service-account create sa-lab07-metrics --description "lab07 Metrics API reader" -o json | tee /tmp/sa-m.json
+M=$(jq -r .id /tmp/sa-m.json)
+confluent iam rbac role-binding create --principal User:$M --role MetricsViewer     # organisation scope [V]
+confluent api-key create --resource cloud --service-account $M -o json > /tmp/key-m.json
+METRICS_KEY=$(jq -r .api_key /tmp/key-m.json); METRICS_SECRET=$(jq -r .api_secret /tmp/key-m.json)
+sleep 60
+```
+
+Then:
 
 ```bash
 curl -s -u "$METRICS_KEY:$METRICS_SECRET" -H 'Content-Type: application/json' \
   https://api.telemetry.confluent.cloud/v2/metrics/cloud/query --data "{
     \"aggregations\": [{\"metric\": \"io.confluent.kafka.server/consumer_lag_offsets\"}],
-    \"filter\": {\"field\": \"resource.kafka.id\", \"op\": \"EQ\", \"value\": \"$CLUSTER_ID\"},
+    \"filter\": {\"field\": \"resource.kafka.id\", \"op\": \"EQ\", \"value\": \"$BASIC_ID\"},
     \"granularity\": \"PT1M\",
     \"group_by\": [\"metric.consumer_group_id\", \"metric.topic\"],
     \"intervals\": [\"now-30m/now\"],
@@ -683,11 +808,11 @@ curl -s -u "$METRICS_KEY:$METRICS_SECRET" -H 'Content-Type: application/json' \
 
 Expected: one point per minute per group/topic with the lag value. Metrics arrive with a few
 minutes delay. For Prometheus/Datadog scraping use
-`https://api.telemetry.confluent.cloud/v2/metrics/cloud/export?resource.kafka.id=$CLUSTER_ID` [V].
+`https://api.telemetry.confluent.cloud/v2/metrics/cloud/export?resource.kafka.id=$BASIC_ID` [V].
 Cluster-link lag, when you have a link (module on hybrid): metric
 `io.confluent.kafka.server/cluster_link_mirror_topic_offset_lag` (preview) [V].
 
-CLI shortcut: `confluent kafka consumer group lag list analytics-lab07` [V].
+CLI shortcut: `confluent kafka consumer group lag list analytics-lab07 --cluster $BASIC_ID` [V].
 
 # 5. Same data product on-prem — CFK CRs + ArgoCD (written only)
 
@@ -701,7 +826,7 @@ metadata:
   name: billing-call-record-created-v1-avsc
   namespace: confluent
 data:
-  schema: |
+  schema: |    # contents of 04-stream-governance/schemas/call-record-created.avsc
     { "type": "record", "name": "CallRecordCreated", "namespace": "com.example.billing", "fields": [ ... ] }
 ---
 apiVersion: platform.confluent.io/v1beta1
@@ -790,22 +915,29 @@ ArgoCD PostSync hook.
 | Check | How | Expected |
 |---|---|---|
 | Module refuses bad input | negative tests in step 1b | 4 plan-time errors |
-| Role bindings complete | `confluent iam rbac role-binding list --principal User:<sa-analytics-consumer> --environment $ENV_ID --cloud-cluster $CLUSTER_ID` | topic read + group prefix read (subject read listed under SR scope) |
+| Delete guard | renamed module in step 2, `conftest test` | `deny`: topic would be deleted |
+| Role bindings complete | `confluent iam rbac role-binding list --principal User:<id of sa-lab07-analytics-consumer-tf> --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID` | topic read + group prefix read (subject read listed under SR scope) |
 | Catalog | Data Portal → `network` | owner, description, `Internal` + `DataProduct` tags |
 | Quota | perf test with/without | ≈ 1 MB/s with quota, throttle time > 0 |
 | Lag | 4a + 4b | lag visible for `analytics-*` groups |
-| CI | open a PR that adds a required field without default | `schema-compat` job fails with the SR message |
+| CI | in the scratch repo (step 2), before teardown: open a PR that adds a required field without default | `schema-compat` job fails with the SR message |
 
 # Teardown
 
 ```bash
-cd 07-production-systems/terraform/live/cc-basic && terraform destroy
-# CLI-created items from step 1 (if any)
+cd 07-production-systems/terraform/live/cc-std-lab07 && terraform destroy     # needs the cluster, so first
+# CLI-created items from steps 1 and 4b, as your own user
 confluent iam service-account delete $(jq -r .id /tmp/sa-p.json) --force
 confluent iam service-account delete $(jq -r .id /tmp/sa-c.json) --force
+confluent api-key delete $(jq -r .api_key /tmp/key-m.json) --force
+confluent iam service-account delete $(jq -r .id /tmp/sa-m.json) --force
+# the Standard cluster (with the step 1 topic)
+confluent kafka cluster delete $CLUSTER_ID --force
 # local
 a kafka-configs --bootstrap-server dc-a:29092 --alter \
   --delete-config producer_byte_rate,consumer_byte_rate --entity-type clients --entity-name replay-job
+a kafka-configs --bootstrap-server dc-a:29092 --alter \
+  --delete-config request_percentage --entity-type clients --entity-name replay-job   # if you tried it in step 3
 a kafka-topics --bootstrap-server dc-a:29092 --delete --topic noc.cell-alarm.raised.v1
 ```
 
@@ -816,7 +948,8 @@ your laptop.
 
 | Part | Cost |
 |---|---|
-| Golden module on `cc-basic` | Basic cluster usage; 3 schemas within Essentials' 100 |
+| Standard cluster `cc-std-lab07`, ~2 h | 0.75 USD/eCKU-h list → about 1–2 USD |
+| Golden module on `cc-std-lab07` | cluster usage; 3 schemas within Essentials' 100 |
 | CI | GitHub Actions minutes (free tier usually enough) |
 | Quota, lag (local) | none |
 | Metrics API | free; rate-limited |

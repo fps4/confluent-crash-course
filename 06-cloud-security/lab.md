@@ -38,6 +38,7 @@ subtitle: Part 1 on cc-basic (ACLs, because Basic has no Kafka RBAC), Part 2 on 
 cd ../00-lab-setup/terraform
 export CC_ENV=$(terraform output -raw environment_id)
 export CC_BASIC=$(terraform output -raw basic_cluster_id)
+export SR_AUTH="$(terraform output -raw sa_sr_api_key):$(terraform output -raw sa_sr_api_secret)"   # Part 1 produces Avro
 cd -
 export TENANT=$(az account show --query tenantId -o tsv)
 confluent environment use $CC_ENV
@@ -83,7 +84,13 @@ for s in $BIL $ANA $CEL; do confluent api-key create --resource $CC_BASIC --serv
 sleep 60
 k() { echo "--api-key $(jq -r .api_key /tmp/key-$1.json) --api-secret $(jq -r .api_secret /tmp/key-$1.json)"; }
 
-echo 'SUB-1001234:{"recordType":"VOICE"}' | confluent kafka topic produce billing.call-record.created.v1 $(k $BIL) --parse-key --delimiter ":"
+# billing.call-record.created.v1 has a registered Avro schema since module 04 ("no schema, no topic"),
+# so produce Avro with that schema, not a JSON string. The SR key is sa-crash-admin's; the Kafka key under test is the team's.
+# (SR flag names as in module 04 B6 [V]; if you tore module 04 down, --schema registers the schema again.)
+echo 'SUB-1001601:{"recordId":"CDR-1001601","recordType":"VOICE","cellId":"CELL-0412","durationSec":184,"startTime":1762499000000,"eventTime":1762499184000}' \
+  | confluent kafka topic produce billing.call-record.created.v1 $(k $BIL) --parse-key --delimiter ":" \
+    --value-format avro --schema ../04-stream-governance/schemas/call-record-created.avsc \
+    --schema-registry-api-key ${SR_AUTH%%:*} --schema-registry-api-secret ${SR_AUTH#*:}
 echo 'X:{"x":1}'  | confluent kafka topic produce noc.cell-alarm.raised.v1 $(k $BIL) --parse-key --delimiter ":"
 confluent kafka topic consume billing.call-record.created.v1 $(k $ANA) --group analytics-lab06 -b
 confluent kafka topic consume customers.subscriber-profile.v1 $(k $ANA) --group analytics-lab06 -b
@@ -94,7 +101,7 @@ confluent kafka topic consume billing.call-record.created.v1 $(k $ANA) --group o
 |---|---|
 | billing produce to `billing.` | success |
 | billing produce to `noc.` | `TOPIC_AUTHORIZATION_FAILED` |
-| analytics consume `billing.` with group `analytics-lab06` | record printed |
+| analytics consume `billing.` with group `analytics-lab06` | record printed (as Avro bytes: Kafka authorization does not need the schema) |
 | analytics consume `customers.subscriber-profile.v1` | topic authorization failed |
 | analytics consume with group `other-group` | **group** authorization failed — the classic onboarding error |
 
@@ -133,7 +140,20 @@ confluent iam rbac role-binding create --principal User:$CEL --role ResourceOwne
 confluent iam rbac role-binding list --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD -o json | jq '.[] | {principal, role, resource_type, name, pattern_type}'
 ```
 
-Expected: bindings listed with `pattern_type: PREFIXED`. Repeat the tests from Part 1 with keys for `$STD`: same results, now with RBAC instead of ACLs.
+Keys for `$STD` and the tests that apply here:
+
+```bash
+for s in $BIL $ANA $CEL; do confluent api-key create --resource $STD --service-account $s -o json > /tmp/key-std-$s.json; done
+sleep 60
+ks() { echo "--api-key $(jq -r .api_key /tmp/key-std-$1.json) --api-secret $(jq -r .api_secret /tmp/key-std-$1.json)"; }
+
+echo 'CELL-0412:{"loadPercent":7}' | confluent kafka topic produce network.cell-load.measured.v1 $(ks $CEL) --parse-key --delimiter ":"
+confluent kafka topic consume network.cell-load.measured.v1 $(ks $ANA) --group analytics-lab06 -b
+confluent kafka topic consume customers.subscriber-profile.v1 $(ks $ANA) --group analytics-lab06 -b
+confluent kafka topic consume network.cell-load.measured.v1 $(ks $ANA) --group other-group -b
+```
+
+Expected: bindings listed with `pattern_type: PREFIXED`; the cells record is produced and the analytics consumer prints it; the PII topic gives topic authorization failed; `other-group` gives group authorization failed. Same pattern as Part 1, now from RBAC. On `$STD` analytics reads only `network.cell-load.` and there is no `noc.` topic, so Part 1's billing tests do not apply.
 
 ### 2.2 Entra ID: resource app, app role, client apps (CLI)
 
@@ -210,7 +230,7 @@ export KAFKA_OPTS="-Dorg.apache.kafka.sasl.oauthbearer.allowed.urls=https://logi
 
 # seed one record with the cells service account key
 echo 'CELL-0412:{"loadPercent":7}' | confluent kafka topic produce network.cell-load.measured.v1 \
-  --api-key <CEL key for STD> --api-secret <secret> --parse-key --delimiter ":"
+  $(ks $CEL) --parse-key --delimiter ":"
 
 kafka-console-consumer.sh --bootstrap-server $BOOT --consumer.config /tmp/oauth.properties \
   --topic network.cell-load.measured.v1 --group analytics-oauth --from-beginning --max-messages 1
@@ -420,6 +440,7 @@ Topics: add `confluent_kafka_topic` resources with an admin API key (pattern as 
 ### Teardown Part 2
 
 ```bash
+for s in $BIL $ANA $CEL; do confluent api-key delete $(jq -r .api_key /tmp/key-std-$s.json) --force; done
 confluent kafka cluster delete $STD --force
 confluent iam pool delete $POOL --provider $IDP --force
 confluent iam provider delete $IDP --force
@@ -435,24 +456,46 @@ Terraform path: `terraform destroy`.
 
 ## Part 3 — Client quota in Confluent Cloud (`paid-session`)
 
-Run while the module 03 Enterprise cluster exists, from the VM in the VNet. Quotas need Enterprise, Freight or Dedicated.
+Quotas need Enterprise, Freight or Dedicated. This part reuses module 03 Part C on the same day, so these must still exist:
+
+- the Enterprise cluster `cc-ent-lab03` with its gateway, access point and private DNS zone;
+- the VM `vm-lab03` with the Kafka 4.x tools, the Confluent CLI and `cc-ent.properties` (module 03 C1 step 8; the Terraform path ends with the same step).
+
+Run everything below **on the VM** (`ssh azureuser@$VM_IP`), logged in with `confluent login` as your own user (OrganizationAdmin: it creates a service account).
 
 ```bash
-ENT=<lkc of cc-ent-lab03>
+export PATH=$PATH:$HOME/kafka_2.13-4.4.0/bin        # the Kafka version from module 03 step 8
+CC_ENV=<env id of crash-course>                      # confluent environment list
+confluent environment use $CC_ENV
+ENT=<lkc of cc-ent-lab03>                            # confluent kafka cluster list
+confluent kafka cluster describe $ENT -o json | jq '.endpoint, .endpoints'
+BOOT_PL=<access-point bootstrap from above, without SASL_SSL:// and :9092>     # as in module 03 steps 6-7
+
+# the noc. topic on cc-ent-lab03 (module 03 step 8 created it; this is a no-op then)
+kafka-topics.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties \
+  --create --if-not-exists --topic noc.cell-alarm.raised.v1 --partitions 3
+
 confluent iam service-account create sa-analytics-replay --description "lab06 quota test" -o json > sa-replay.json
 REP=$(jq -r .id sa-replay.json)
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:noc. --prefix
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperWrite --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:noc. --prefix
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Group:analytics- --prefix
 confluent api-key create --resource $ENT --service-account $REP -o json > key-replay.json
-# client properties replay.properties as in module 03 C1 step 8, with this key
+# client properties as cc-ent.properties in module 03 C1 step 8, with this key
+cat > replay.properties <<EOF
+bootstrap.servers=$BOOT_PL:9092
+security.protocol=SASL_SSL
+sasl.mechanism=PLAIN
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key key-replay.json)' password='$(jq -r .api_secret key-replay.json)';
+EOF
+sleep 60
 
 # baseline
 kafka-producer-perf-test.sh --topic noc.cell-alarm.raised.v1 --num-records 50000 --record-size 1000 \
   --throughput -1 --producer.config replay.properties
 
 # 1 MB/s ingress and egress for this principal
-confluent kafka quota create lab06-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT
+confluent kafka quota create --name lab06-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT   # flags [V]
 confluent kafka quota list --cluster $ENT
 sleep 60
 kafka-producer-perf-test.sh --topic noc.cell-alarm.raised.v1 --num-records 50000 --record-size 1000 \
@@ -464,7 +507,7 @@ kafka-consumer-perf-test.sh --bootstrap-server $BOOT_PL:9092 --consumer.config r
 Expected: baseline several MB/s; after the quota about **1 MB/s** (≈1,000 records/s) for both tools, with latency going up — that is throttling, not errors. Add a default quota for everyone else:
 
 ```bash
-confluent kafka quota create lab06-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
+confluent kafka quota create --name lab06-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
 ```
 
 Terraform equivalent:
@@ -492,30 +535,37 @@ Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-a
 Shows what CC does not have: request-rate quotas, and quotas by client id.
 
 ```bash
-DC=../00-lab-setup/docker-compose.yml
-docker compose -f $DC exec dc-a kafka-topics --bootstrap-server localhost:9092 --create --topic noc.cell-alarm.raised.v1 --partitions 3 2>/dev/null
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
+source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh     # a, b, sra, srb, LAB
+a kafka-topics --bootstrap-server dc-a:29092 --create --topic noc.cell-alarm.raised.v1 --partitions 3 --replication-factor 1
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 100000 --record-size 1000 --throughput -1 \
-  --producer-props bootstrap.servers=localhost:9092 client.id=replay-job
+  --producer-props bootstrap.servers=dc-a:29092 client.id=replay-job
 
-docker compose -f $DC exec dc-a kafka-configs --bootstrap-server localhost:9092 --alter \
+a kafka-configs --bootstrap-server dc-a:29092 --alter \
   --add-config 'producer_byte_rate=1048576,consumer_byte_rate=1048576,request_percentage=25' \
   --entity-type clients --entity-name replay-job
-docker compose -f $DC exec dc-a kafka-configs --bootstrap-server localhost:9092 --describe --entity-type clients --entity-name replay-job
+a kafka-configs --bootstrap-server dc-a:29092 --describe --entity-type clients --entity-name replay-job
 
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 20000 --record-size 1000 --throughput -1 \
-  --producer-props bootstrap.servers=localhost:9092 client.id=replay-job
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
+  --producer-props bootstrap.servers=dc-a:29092 client.id=replay-job
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 20000 --record-size 1000 --throughput -1 \
-  --producer-props bootstrap.servers=localhost:9092 client.id=alarm-processor
+  --producer-props bootstrap.servers=dc-a:29092 client.id=alarm-processor
 ```
 
-Expected: `replay-job` drops to about 1 MB/s; `alarm-processor` (no quota) keeps full speed — the isolation story in one picture. (Service names `dc-a` and port 9092 depend on `00-lab-setup`; adjust.)
+Expected: `replay-job` drops to about 1 MB/s; `alarm-processor` (no quota) keeps full speed — the isolation story in one picture.
 
 In production you quota by **user** (authenticated principal), not by client id, because any client can choose its client id. On the real platform the most important on-prem quota is on the Cluster Link principal (`notes-cp-security.md` §2.6).
 
-Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_byte_rate,request_percentage' --entity-type clients --entity-name replay-job`.
+Remove the quota now. Module 07 runs the same experiment, and its "no quota" baseline must not be throttled:
+
+```bash
+a kafka-configs --bootstrap-server dc-a:29092 --alter \
+  --delete-config 'producer_byte_rate,consumer_byte_rate,request_percentage' \
+  --entity-type clients --entity-name replay-job
+a kafka-configs --bootstrap-server dc-a:29092 --describe --entity-type clients --entity-name replay-job   # no quota configs left
+```
 
 **CP-side OAuth/mTLS/MDS** is not built in this lab (the `local` stack runs without auth). Read `notes-cp-security.md` §2.3–2.4 and be able to write the broker listener block from memory.
 
@@ -526,16 +576,16 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 - [ ] Part 1: denied produce to another domain; denied consume without the group ACL.
 - [ ] Part 2: prefix RBAC bindings listed; OAuth token has v2 issuer and `roles`; OAuth consume works, PII topic and produce denied; group-assignment pitfall reproduced; audit log shows denials and `pool-…` authentications.
 - [ ] Part 3: throughput capped at ~1 MB/s for the quota principal.
-- [ ] Part 4: `replay-job` throttled, `alarm-processor` not.
+- [ ] Part 4: `replay-job` throttled, `alarm-processor` not; quota removed afterwards.
 
 ## Teardown summary
 
 | Part | Remove |
 |---|---|
 | 1 | `confluent api-key delete` for the three team keys; ACLs (`confluent kafka acl delete …`) or keep them on `cc-basic` for later modules; service accounts if not reused |
-| 2 | Standard cluster, identity pool, identity provider, audit key, Entra apps and group (see 2.7 teardown) |
+| 2 | team keys for `$STD`, Standard cluster, identity pool, identity provider, audit key, Entra apps and group (see 2.7 teardown) |
 | 3 | quotas, `sa-analytics-replay` (cluster goes with module 03 teardown) |
-| 4 | client quota config on `dc-a` |
+| 4 | client quota config on `dc-a` (already removed at the end of Part 4) |
 
 ## Cost note
 

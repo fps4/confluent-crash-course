@@ -17,7 +17,7 @@ subtitle: CSFLE on customers.subscriber-profile.v1. Consumers with and without k
 | Path | Environment | Paid feature |
 |---|---|---|
 | Main | **Confluent Cloud**, a separate environment `crash-course-csfle` with **Stream Governance Advanced** + a Basic cluster on Azure `westeurope`, deleted at the end | **CSFLE needs Stream Governance Advanced [V]** (billed per environment-hour) |
-| Variant | `local` (`dc-a` + its Schema Registry) with the DEK Registry extension enabled; KMS = Azure Key Vault or `local-kms` | CP docs: **Confluent Enterprise 8.0+ with CSFLE add-on licence [V]**. Whether the 30-day trial mode enables the add-on is not documented — test it. |
+| Variant | `local` (`dc-a` + its Schema Registry) with the DEK Registry extension enabled; KMS = Azure Key Vault or `local-kms` | CP docs: **Confluent Enterprise 8.0+ with CSFLE add-on licence [V]**. The local stack runs under the developer licence (free, no expiry, one broker per cluster; see `00-lab-setup`). Whether that licence covers the CSFLE add-on is not documented — test it. |
 
 Why a separate environment and not `crash-course` itself: the package is set per environment. A separate environment keeps the `cc-basic` base on Essentials and makes teardown one command. Downgrading an environment from Advanced back to Essentials may not be possible **[V]** — another reason not to touch the base. The Basic cluster type is fine: encryption happens in the client.
 
@@ -27,14 +27,18 @@ Azure: one resource group with a Key Vault (Azure RBAC mode), one RSA key, and t
 
 - `confluent` CLI v4.x, logged in as OrganizationAdmin (to create the environment).
 - `az` CLI logged in; rights to create Key Vault and role assignments (Owner or User Access Administrator on the resource group) and app registrations.
-- Java 17+ and **Confluent Platform 8.x tools** with the Avro console producer/consumer. Easiest: run them inside the `dc-a` Schema Registry container from `00-lab-setup` (it ships `kafka-avro-console-producer`). Check the Azure encryption jar is present:
+- The lab helpers from `00-lab-setup` (`LAB`, and `sra` / `a` to run a tool inside `sr-a` / `dc-a`):
+  ```bash
+  source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh
+  ```
+- Java 17+ and **Confluent Platform 8.x tools** with the Avro console producer/consumer. Easiest: run them inside the `dc-a` Schema Registry container from `00-lab-setup` (it ships `kafka-avro-console-producer`); the commands below do that with `sra`. Check the Azure encryption jar is present:
   ```bash
   docker compose -f $LAB/docker-compose.yml exec sr-a \
     bash -c 'ls /usr/share/java/schema-registry /usr/share/java/kafka-serde-tools 2>/dev/null | grep -i encryption'
   ```
   Expected: `kafka-schema-registry-client-encryption-azure-*.jar` among others **[V]**. If missing, download the CP 8.x tarball and use its `bin/` instead.
 - `jq`, `curl`.
-- Start clean, because module 04 created the same topic: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
+- Start clean, because module 04 created the same topic: `( cd "$LAB" && docker compose --profile mm2 down -v && docker compose up -d )`
 
 ---
 
@@ -139,11 +143,13 @@ curl -s -u $SR_AUTH -X POST "$SR_URL/catalog/v1/types/tagdefs" -H 'Content-Type:
   -d '[{"entityTypes":["sr_field"],"name":"PII","description":"Personal data, must be encrypted before leaving the DC"}]' | jq .
 
 confluent schema-registry kek create kek-customers --kms-type azure-kms --kms-key "$KEK_URI" \
-  --doc "customer PII, non-shared" --environment $CSFLE_ENV
+  --doc "customer PII, non-shared" --environment $CSFLE_ENV     # form [V], see below
 confluent schema-registry kek describe kek-customers
 ```
 
 Expected: tag `PII` created; KEK `kek-customers` with `kmsType: azure-kms`, `shared: false`.
+
+The `kek create` form (name as a positional argument, `--kms-type azure-kms`) follows the CLI command reference read on 2026-11-15; not yet run on v4.82 **[V]**. If your CLI rejects it, check `confluent schema-registry kek create --help`: the alternative to look for is `--name kek-customers` instead of the positional name. `azure-kms` is the same spelling the REST API and the rule params use.
 
 ### 1.3 Schema with tags and the ENCRYPT rule
 
@@ -188,7 +194,7 @@ Expected: an `id`; `latest` shows the rule set with `encrypt-pii`.
 
 ### 1.4 Produce
 
-Client config files (one per service account):
+Client config files (one per service account), in `$LAB/work/`, which the containers see as `/work/` (git-ignored: the files hold API secrets):
 
 ```bash
 BOOT=$(confluent kafka cluster describe $CSFLE_CL -o json | jq -r .endpoint | sed 's#SASL_SSL://##')
@@ -200,14 +206,14 @@ sasl.mechanism=PLAIN
 sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key /tmp/kafka-$1.json)' password='$(jq -r .api_secret /tmp/kafka-$1.json)';
 EOF
 }
-mk $P /tmp/producer.properties; mk $R /tmp/reader.properties; mk $N /tmp/nokek.properties
+mk $P $LAB/work/producer.properties; mk $R $LAB/work/reader.properties; mk $N $LAB/work/nokek.properties
 ```
 
-Producer (run where the CP 8.x tools are; copy the `/tmp` files into the container if you use it):
+Producer, inside `sr-a` (`sra`), so the config file is `/work/producer.properties`. The `$(jq …)` parts run in your shell before the command starts. With a local CP 8.x install instead, drop `sra` and use `$LAB/work/…` paths.
 
 ```bash
-kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
-  --producer.config /tmp/producer.properties \
+sra kafka-avro-console-producer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
+  --producer.config /work/producer.properties \
   --reader-property schema.registry.url=$SR_URL \
   --reader-property basic.auth.credentials.source=USER_INFO \
   --reader-property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$P.json):$(jq -r .api_secret /tmp/sr-$P.json) \
@@ -233,31 +239,44 @@ Expected log line, once: `Registered dek for kek kek-customers, subject customer
 Common part:
 
 ```bash
-consume() { # $1=props $2=sa $3=sp json $4=group
-kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
+consume() { # $1=props (path in the container) $2=sa $3=sp json $4=group, then optional extra flags
+sra kafka-avro-console-consumer --bootstrap-server $BOOT --topic customers.subscriber-profile.v1 \
   --consumer.config $1 --group $4 --from-beginning --max-messages 2 \
   --formatter-property schema.registry.url=$SR_URL \
   --formatter-property basic.auth.credentials.source=USER_INFO \
   --formatter-property basic.auth.user.info=$(jq -r .api_key /tmp/sr-$2.json):$(jq -r .api_secret /tmp/sr-$2.json) \
   --formatter-property rule.executors._default_.param.tenant.id=$TENANT \
   --formatter-property rule.executors._default_.param.client.id=$(jq -r .appId $3) \
-  --formatter-property rule.executors._default_.param.client.secret=$(jq -r .password $3)
+  --formatter-property rule.executors._default_.param.client.secret=$(jq -r .password $3) "${@:5}"
 }
 ```
 
 | Case | Command | Expected |
 |---|---|---|
-| A — full access | `consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a` | `customerName: "Anna de Vries"`, `nationalId: "ID1234567"` in plaintext |
-| B — Key Vault yes, KEK RBAC no | `consume /tmp/nokek.properties $N /tmp/sp-reader.json lab05-b` | record printed, PII fields are base64 ciphertext; log shows a 403 from the DEK Registry |
-| C — KEK RBAC yes, Key Vault no | `consume /tmp/reader.properties $R /tmp/sp-nokv.json lab05-c` | PII fields ciphertext; log shows a Key Vault `Forbidden` on decrypt |
+| A — full access | `consume /work/reader.properties $R /tmp/sp-reader.json lab05-a` | `customerName: "Anna de Vries"`, `nationalId: "ID1234567"` in plaintext |
+| B — Key Vault yes, KEK RBAC no | `consume /work/nokek.properties $N /tmp/sp-reader.json lab05-b` | record printed, PII fields are base64 ciphertext; log shows a 403 from the DEK Registry |
+| C — KEK RBAC yes, Key Vault no | `consume /work/reader.properties $R /tmp/sp-nokv.json lab05-c` | PII fields ciphertext; log shows a Key Vault `Forbidden` on decrypt |
 | D — no rule executor credentials at all | same as A without the three `rule.executors…` lines | default Azure credential chain fails → ciphertext (or uses your `az login` identity if the chain finds it — interesting to observe) |
-| Raw | `kafka-console-consumer --bootstrap-server $BOOT --consumer.config /tmp/reader.properties --topic customers.subscriber-profile.v1 --from-beginning --max-messages 2` | Avro bytes; `SUB-1001601`, `POSTPAID` visible, names not visible |
+| Raw | `a kafka-console-consumer --bootstrap-server $BOOT --consumer.config /work/reader.properties --topic customers.subscriber-profile.v1 --from-beginning --max-messages 2` | Avro bytes; `SUB-1001601`, `POSTPAID` visible, names not visible |
 
 Also open the topic in the Confluent Cloud Console → Messages: `customerName` shows ciphertext. The Console is just another client without the key.
 
 Optional: `confluent kafka topic consume customers.subscriber-profile.v1 -b --value-format avro --schema-registry-endpoint $SR_URL ...` — note whether the Go-based CLI applies the rule or shows ciphertext **[V]**.
 
-Switch case B's read failure mode to `ERROR` to see the difference: register a new schema version with `"onFailure": "ERROR,ERROR"`, rerun case B, expect the consumer to stop with a serialization exception. Set it back to `ERROR,NONE` after.
+Switch case B's read failure mode to `ERROR` to see the difference: register the same schema again with the rule's `onFailure` changed to `ERROR,ERROR`, rerun case B, expect the consumer to stop with a serialization exception. Set it back to `ERROR,NONE` after.
+
+```bash
+jq '.ruleSet.domainRules[0].onFailure = "ERROR,ERROR"' /tmp/register.json > /tmp/register-error.json
+curl -s -u $SR_AUTH -X POST "$SR_URL/subjects/$SUBJ/versions" \
+  -H 'Content-Type: application/vnd.schemaregistry.v1+json' -d @/tmp/register-error.json | jq .
+consume /work/nokek.properties $N /tmp/sp-reader.json lab05-b2 --formatter-property use.latest.version=true
+
+# back to ERROR,NONE: soft-delete the ERROR,ERROR version, so the first version is the latest again
+curl -s -u $SR_AUTH -X DELETE "$SR_URL/subjects/$SUBJ/versions/latest" | jq .
+curl -s -u $SR_AUTH "$SR_URL/subjects/$SUBJ/versions/latest" | jq '.ruleSet.domainRules[0].onFailure'   # "ERROR,NONE"
+```
+
+`use.latest.version=true` makes the consumer apply the rules of the latest version; without it, it applies the rules attached to the writer's schema ID, which still says `ERROR,NONE` **[V]**. The revert deletes the version instead of re-registering `/tmp/register.json`, because re-registering a schema identical to an existing version returns that version and adds nothing **[V]**.
 
 ### 1.6 Inside the DEK Registry
 
@@ -276,17 +295,23 @@ Expected: the KEK has `kmsKeyId` = your Key Vault URI and `shared: false`. The D
 ```bash
 az role assignment delete --assignee $(jq -r .appId /tmp/sp-reader.json) --role "Key Vault Crypto User" --scope $KEY_SCOPE
 sleep 60
-consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a2
+consume /work/reader.properties $R /tmp/sp-reader.json lab05-a2
 ```
 
-Expected: ciphertext now (new process, no cached DEK). A long-running consumer would keep plaintext until its DEK cache or token expires — this is the answer to "how fast is revocation?". Re-add the role after.
+Expected: ciphertext now (new process, no cached DEK). A long-running consumer would keep plaintext until its DEK cache or token expires — this is the answer to "how fast is revocation?". Re-add the role after (the rotation test below needs it):
+
+```bash
+az role assignment create --assignee $(jq -r .appId /tmp/sp-reader.json) --role "Key Vault Crypto User" --scope $KEY_SCOPE
+sleep 60
+consume /work/reader.properties $R /tmp/sp-reader.json lab05-a2b    # plaintext again
+```
 
 **Rotate the KEK in Key Vault:**
 
 ```bash
 az keyvault key rotate --vault-name $KV -n kek-customers
 az keyvault key list-versions --vault-name $KV -n kek-customers --query '[].kid' -o tsv
-consume /tmp/reader.properties $R /tmp/sp-reader.json lab05-a3
+consume /work/reader.properties $R /tmp/sp-reader.json lab05-a3
 ```
 
 Expected: still plaintext, because the KEK was registered with a **versioned** URI and the old version is still enabled. Now think about the other case: if the KEK had been registered **without** a version, the client would resolve to the latest version, which did not wrap the existing DEK → unwrap fails → ciphertext. The fix is `encrypt.azure.key.version.save=true` and rewrapping DEKs before rotation (CC manage-keys doc). Rewrapping uses the `rewrap-deks` tool or the DEK API with `rewrap=true` **[V]** — read the doc, do not run it blind.
@@ -644,7 +669,7 @@ services:
     environment:
       # replaces the base list: keep RuleSet + SchemaExporter (module 01's Schema Linking), add DekRegistry
       SCHEMA_REGISTRY_RESOURCE_EXTENSION_CLASS: "io.confluent.kafka.schemaregistry.rulehandler.RuleSetResourceExtension,io.confluent.schema.exporter.SchemaExporterResourceExtension,io.confluent.dekregistry.DekRegistryResourceExtension"
-      SCHEMA_REGISTRY_CONFLUENT_LICENSE: "${CP_LICENSE:-}"               # [V] empty = trial; add-on behaviour in trial is undocumented
+      SCHEMA_REGISTRY_CONFLUENT_LICENSE: "${CP_LICENSE:-}"               # [V] empty = developer licence (00-lab-setup); whether it covers the CSFLE add-on is undocumented
       SCHEMA_REGISTRY_CONFLUENT_LICENSE_ADDON_CSFLE: "${CP_LICENSE:-}"
 ```
 
@@ -674,13 +699,24 @@ Optional, connects to module 01 (Schema Linking): if `dc-b` has a Schema Registr
 
 ## Teardown
 
+Works from a fresh shell: every id is looked up by the name the lab gave it.
+
 ```bash
+AZ_REGION=westeurope; RG=rg-crash-csfle
+CSFLE_ENV=$(confluent environment list -o json | jq -r '.[] | select(.name=="crash-course-csfle") | .id')
+KV=$(az keyvault list -g $RG --query '[0].name' -o tsv)
 confluent environment delete $CSFLE_ENV --force       # removes cluster, SR, keys, KEK metadata, role bindings
-for s in $P $R $N; do confluent iam service-account delete $s --force; done
+for n in sa-csfle-producer sa-csfle-reader sa-csfle-nokek; do
+  s=$(confluent iam service-account list -o json | jq -r --arg n $n '.[] | select(.name==$n) | .id')
+  [ -n "$s" ] && confluent iam service-account delete $s --force
+done
 for n in sp-csfle-producer sp-csfle-reader sp-csfle-nokv; do az ad app delete --id $(az ad app list --display-name $n --query '[0].appId' -o tsv); done
 az group delete -n $RG --yes --no-wait
 az keyvault purge -n $KV --location $AZ_REGION        # after the group is gone; frees the name
-rm -f /tmp/sp-*.json /tmp/kafka-*.json /tmp/sr-*.json /tmp/*.properties
+rm -f /tmp/sp-*.json /tmp/kafka-*.json /tmp/sr-*.json $LAB/work/{producer,reader,nokek}.properties
+
+# Part 3 only: put sr-a back on the base compose file (drops the DekRegistry override)
+docker compose -f $LAB/docker-compose.yml up -d --force-recreate sr-a
 ```
 
 Terraform path: `terraform destroy` (then `az keyvault purge` if you want the name back). The CC environment is deleted with it.

@@ -6,13 +6,25 @@ subtitle: The three lab environments every module uses (local Docker, cc-basic, 
 # What this is
 
 One place for the lab plumbing, so the other modules only say "environment: `local`" and start.
-Three environments, from free to billable:
+Three shared environments, from free to billable, plus a few that single modules create and delete
+themselves:
 
 | Environment | What it is | Used for | Cost |
 |---|---|---|---|
 | `local` | Docker Compose: two single-node KRaft clusters **`dc-a`** and **`dc-b`** (Confluent Server 8.4.0), one Schema Registry each (**`sr-a`**, **`sr-b`**), optional Kafka Connect worker for MirrorMaker 2 | Cluster Linking CP↔CP, failover/failback, MM2, Schema Linking CP→CP, data contracts with rules, broker-side schema ID validation | Free (developer licence, see below) |
 | `cc-basic` | Confluent Cloud environment **`crash-course`**, Basic cluster **`cc-basic`** on Azure **`westeurope`**, Schema Registry (Stream Governance **Essentials**), service account **`sa-crash-admin`** with API keys | Cloud clients, Schema Linking CP→CC, governance basics, Terraform practice | Near zero: Basic's first eCKU is free; you pay data in/out and storage. Trial credits cover it |
-| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) and/or Enterprise cluster **`cc-ent`** (always private, Azure PrivateLink Attachment) in the same environment. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC as Cluster Linking destination, CC broker-side validation, Private Link (module 03) | Billable per hour. See "Cost" |
+| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) from this folder's Terraform, and module 03's Enterprise cluster **`cc-ent-lab03`** with a Private Link gateway, which module 03 builds itself. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC broker-side validation (module 01); Private Link and quotas (modules 03, 06) | Billable per hour. See "Cost" |
+
+Created and deleted by single modules:
+
+| Name | Module | What | Cost |
+|---|---|---|---|
+| `crash-course-landing` | 01 | Environment with Stream Governance Essentials: the landing registry for on-prem schemas | free |
+| `crash-course-adv` | 04 | Environment with Stream Governance Advanced, for data-contract rules (the upgrade can't be undone) | small [V] |
+| `crash-course-csfle` | 05 | Environment with Stream Governance Advanced, plus an Azure Key Vault and Entra service principals | small [V] |
+| `cc-std-lab06` | 06 | Standard cluster: Basic has no RBAC, OAuth or audit logs | ~1–2 USD for 2 h [V] |
+| `cc-std-lab07` | 07 | Standard cluster for the golden module's role bindings | ~1–2 USD for 2 h [V] |
+| `internals` | 08 | Local Docker project with three brokers, next to `dc-a`/`dc-b` | free |
 
 Versions pinned on 2026-11-07:
 
@@ -21,7 +33,7 @@ Versions pinned on 2026-11-07:
 | Confluent Platform images | **8.4.0** (Apache Kafka 4.4), tags pushed 2026-10-26 | Docker Hub `confluentinc/cp-server` tags; CP release notes |
 | Confluent CLI | **v4.82.0** (2026-11-03) | CLI release notes |
 | Terraform provider `confluentinc/confluent` | **2.94.0** (2026-11-06) | registry.terraform.io, GitHub releases |
-| Terraform | ≥ 1.5 | — |
+| Terraform | ≥ 1.9 (the highest any lab asks for) | — |
 
 CP 8.4 is two weeks old today. If something in 8.4.0 breaks a lab, change the four image tags to
 the latest 8.3.x and note it in the lab. [V]
@@ -116,7 +128,7 @@ call records), `alarm-router` (the NOC), `cells-ui`, `analytics-*` for the Azure
 - Confluent CLI (on macOS: `brew install confluentinc/tap/cli`; other platforms: see the CLI
   install docs), then `confluent version` should show v4.82.0 or later. (`confluent update`
   upgrades in place.)
-- Terraform ≥ 1.5 (on macOS: `brew install hashicorp/tap/terraform`).
+- Terraform ≥ 1.9 (on macOS: `brew install hashicorp/tap/terraform`).
 - A Confluent Cloud account for `cc-basic` and `paid-session`.
 
 # `local` — start, use, stop
@@ -340,7 +352,12 @@ lunch, all covered by trial credit. Read the console's estimate before you press
 - [ ] Delete cluster links and mirror topics first if a lab created them outside Terraform (a link with mirror topics cannot be deleted)
 - [ ] `terraform destroy` when the course is over (environment, cluster, SA, keys)
 - [ ] `confluent api-key delete <terraform key>` and remove `sa-terraform`
-- [ ] `docker compose --profile mm2 down -v`
+- [ ] Environments the modules created: `confluent environment list`, then delete `crash-course-landing`,
+  `crash-course-adv` and `crash-course-csfle` if a module's teardown was skipped
+- [ ] Standard clusters `cc-std-lab06` / `cc-std-lab07` and module 03's `cc-ent-lab03`, gateway and access point
+- [ ] Azure: `az group list -o table` shows no `rg-crash-*` resource group (VNet, VM, Key Vault)
+- [ ] Entra ID: the app registrations and service principals modules 05 and 06 created
+- [ ] `docker compose --profile mm2 down -v`, and module 08's `internals` project
 - [ ] Billing page in the console: no running clusters
 
 # Status and untested items in this folder

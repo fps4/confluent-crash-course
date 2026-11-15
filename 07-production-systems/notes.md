@@ -131,7 +131,7 @@ that is shorter than any workaround.
 | State | Terraform state (Azure Blob backend) | The cluster itself + Git; no external state file |
 | Policy gate | OPA/Conftest on `terraform show -json` plan | Same Rego policies via Conftest in CI + Kyverno/Gatekeeper admission in OpenShift |
 | Drift | `terraform plan` on a schedule | ArgoCD shows OutOfSync; self-heal on |
-| Gaps [V] | Client quotas only Enterprise/Freight/Dedicated; broker validation only Dedicated | No CFK CR for client quotas found → a platform Job (`kafka-configs`) driven from the same Git values |
+| Gaps [V] | Client quotas only Enterprise/Freight/Dedicated; broker validation only Dedicated; Kafka RBAC (topic/group role bindings) not on Basic | No CFK CR for client quotas found → a platform Job (`kafka-configs`) driven from the same Git values |
 
 The developer writes **one YAML/HCL "data product" spec**; the platform renders it to Terraform
 (cloud) or CRs (on-prem). The domain team never touches either directly. That keeps the

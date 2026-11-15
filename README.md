@@ -42,7 +42,7 @@ Videos are published one at a time; the titles below link once they are out.
 | 04 | [Stream governance](04-stream-governance/notes.md) · [lab](04-stream-governance/lab.md) | Governance for teams that don't know each other | Streaming Data Governance course | local → cc-basic |
 | 05 | [CSFLE](05-csfle/notes.md) · [lab](05-csfle/lab.md) | Encrypting a field nobody else should read | CSFLE course + docs | `crash-course-csfle` (Advanced) |
 | 06 | [Security](06-cloud-security/notes.md) · [CP side](06-cloud-security/notes-cp-security.md) · [lab](06-cloud-security/lab.md) | Who is allowed to read this | Confluent Cloud Security course + docs | `cc-std-lab06` + paid-session |
-| 07 | [Production systems](07-production-systems/notes.md) · [lab](07-production-systems/lab.md) | From "it works" to "it runs a business" | Mastering Production Data Streaming Systems | local → cc-basic |
+| 07 | [Production systems](07-production-systems/notes.md) · [lab](07-production-systems/lab.md) | From "it works" to "it runs a business" | Mastering Production Data Streaming Systems | local → cc-basic + `cc-std-lab07` |
 | 08 | [Kafka internals](08-kafka-internals/notes.md) · [clients and storage](08-kafka-internals/notes-clients-and-storage.md) · [lab](08-kafka-internals/lab.md) | One layer down | Apache Kafka Internal Architecture | local (3-broker override) |
 
 ## Lab environments and cost
@@ -54,6 +54,7 @@ Details, versions and licence terms: [00-lab-setup](00-lab-setup/README.md).
 | `local` | Docker: two single-node KRaft CP 8.4 clusters `dc-a`, `dc-b` (stand-ins for two on-prem data centres), one Schema Registry each, optional MirrorMaker 2 worker | free (developer licence [V]) |
 | `cc-basic` | Confluent Cloud environment `crash-course` (Stream Governance Essentials), Basic cluster on Azure westeurope | near zero; covered by trial credits |
 | `cc-std-lab06` | temporary Standard cluster — Basic has no RBAC, OAuth or audit logs | ~1–2 USD for 2 h [V] |
+| `cc-std-lab07` | temporary Standard cluster for module 07's role bindings (Basic has no Kafka RBAC) | ~1–2 USD for 2 h [V] |
 | `crash-course-csfle` | throwaway environment with Stream Governance Advanced (the upgrade cannot be undone) | small [V] |
 | `paid-session` | same-day sessions: a **Dedicated** cluster with a public endpoint (the link from your laptop and broker-side validation, module 01) and an **Enterprise** cluster with a Private Link gateway + VNet/VM (module 03) | Enterprise < 10 USD for 3 h [V]; Dedicated: read the console's estimate; `terraform destroy` the same day |
 
@@ -67,7 +68,7 @@ Pinned (2026-11-07): CP 8.4.0 images, Confluent CLI v4.82.0, Terraform `confluen
 
 - Docker (Docker Desktop, Colima or OrbStack) with **at least 6 GB RAM** for the containers.
 - `jq`, `curl`, `dig`, `openssl`.
-- Confluent CLI v4.82.0 or later, Terraform ≥ 1.5.
+- Confluent CLI v4.82.0 or later, Terraform ≥ 1.9.
 - A Confluent Cloud account (for `cc-basic` and the paid parts).
 - For modules 03, 05 and 06: an Azure subscription where you can create resource groups, Key Vaults
   and Entra app registrations, and the `az` CLI.
