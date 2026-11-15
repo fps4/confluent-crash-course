@@ -135,8 +135,8 @@ call records), `alarm-router` (the NOC), `cells-ui`, `analytics-*` for the Azure
 
 ```bash
 mkdir -p ~/labs && cd ~/labs
-git clone https://github.com/fps4/confluent-kafka-crash-course.git
-export LAB=~/labs/confluent-kafka-crash-course/00-lab-setup
+git clone https://github.com/fps4/hybrid-kafka-on-azure.git
+export LAB=~/labs/hybrid-kafka-on-azure/00-lab-setup
 cd "$LAB"
 
 docker compose up -d                    # dc-a, sr-a, dc-b, sr-b
@@ -151,7 +151,7 @@ docker compose ps                       # dc-a and dc-b should be "healthy"
 **In every new terminal**, load the lab helpers (bash or zsh):
 
 ```bash
-source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh
 lab_check                               # containers up, /work shared, REST ports reachable
 ```
 
@@ -226,8 +226,8 @@ machine**, not on the laptop:
 ```bash
 ssh <docker-host>
 mkdir -p ~/labs && cd ~/labs
-git clone https://github.com/fps4/confluent-kafka-crash-course.git
-cd confluent-kafka-crash-course/00-lab-setup
+git clone https://github.com/fps4/hybrid-kafka-on-azure.git
+cd hybrid-kafka-on-azure/00-lab-setup
 docker compose up -d
 source ./lab-env.sh && lab_check
 ```

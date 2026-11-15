@@ -535,7 +535,7 @@ Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-a
 Shows what CC does not have: request-rate quotas, and quotas by client id.
 
 ```bash
-source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh     # a, b, sra, srb, LAB
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # a, b, sra, srb, LAB
 a kafka-topics --bootstrap-server dc-a:29092 --create --topic noc.cell-alarm.raised.v1 --partitions 3 --replication-factor 1
 a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 100000 --record-size 1000 --throughput -1 \

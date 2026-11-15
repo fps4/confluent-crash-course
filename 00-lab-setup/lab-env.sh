@@ -1,6 +1,6 @@
 # Lab shell helpers for the `local` environment. Source it in every new terminal:
 #
-#   source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh     # bash or zsh
+#   source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # bash or zsh
 #   lab_check                                                        # optional sanity check
 #
 # Defines LAB, DCA_ID, DCB_ID and the functions a, b, sra, srb (run a tool inside a container).

@@ -1,4 +1,4 @@
-# Confluent Kafka crash course — Terraform base for the `cc-basic` and `paid-session` environments.
+# Hybrid Kafka on Azure — Terraform base for the `cc-basic` and `paid-session` environments.
 # Written 2026-11-07. UNTESTED: `terraform validate` / `plan` / `apply` have not been run.
 #
 # Provider pinned to the version that was current on 2026-11-07 (v2.94.0, released 2026-11-06).

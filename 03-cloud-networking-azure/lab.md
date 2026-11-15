@@ -187,7 +187,7 @@ confluent iam ip-group delete $IPG
 Purpose: see the on-prem problem with your own eyes.
 
 ```bash
-source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh     # a, LAB
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # a, LAB
 a kafka-configs --bootstrap-server dc-a:29092 --describe --entity-type brokers --entity-name 1 --all \
   | grep -E '^ *(advertised\.)?listeners='
 ```

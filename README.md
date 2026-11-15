@@ -1,9 +1,11 @@
 ---
-title: Confluent Kafka crash course
-subtitle: Advanced hands-on Apache Kafka course on Confluent Platform and Confluent Cloud for hybrid and multicloud designs — Cluster Linking, Azure private networking, governance, security. Built 2026-11-07.
+title: Hybrid Kafka on Azure
+subtitle: Designing Confluent Platform and Confluent Cloud between your data centres and Azure. An advanced, hands-on Apache Kafka course — Cluster Linking, Azure private networking, governance, security. Built 2026-11-07.
 ---
 
-# Confluent Kafka crash course
+# Hybrid Kafka on Azure
+
+*Designing Confluent Platform and Confluent Cloud between your data centres and Azure.*
 
 An advanced, hands-on **Apache Kafka** course for **experienced integration, platform and data
 engineers and architects**: people who already run Kafka or similar messaging in production and now
@@ -79,8 +81,8 @@ Quick start:
 
 ```bash
 mkdir -p ~/labs && cd ~/labs
-git clone https://github.com/fps4/confluent-kafka-crash-course.git
-cd confluent-kafka-crash-course/00-lab-setup
+git clone https://github.com/fps4/hybrid-kafka-on-azure.git
+cd hybrid-kafka-on-azure/00-lab-setup
 docker compose up -d        # dc-a, sr-a, dc-b, sr-b
 ```
 

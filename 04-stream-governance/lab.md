@@ -42,7 +42,7 @@ helper functions (`a`, `sra`), ports and Terraform outputs.
 - Start clean, because module 01 created the same topics:
 
 ```bash
-source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh     # a, sra, LAB, DCA_ID, DCB_ID
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # a, sra, LAB, DCA_ID, DCB_ID
 ( cd "$LAB" && docker compose --profile mm2 down -v && docker compose up -d )
 lab_check                                                          # ends with "All good."
 ```
@@ -51,7 +51,7 @@ The export block (run it again in every new shell):
 
 ```bash
 # --- local (from 00-lab-setup) ---
-source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh     # a, sra, LAB
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # a, sra, LAB
 GOV=$LAB/../04-stream-governance          # this module in the repo: schemas/, terraform/
 export A_SR=http://localhost:8081        # sr-a from the host
 

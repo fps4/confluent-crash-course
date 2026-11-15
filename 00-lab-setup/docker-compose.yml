@@ -1,4 +1,4 @@
-# Confluent Kafka crash course — local lab: two single-node KRaft clusters (dc-a, dc-b)
+# Hybrid Kafka on Azure — local lab: two single-node KRaft clusters (dc-a, dc-b)
 #
 # Written 2026-11-07 against Confluent Platform 8.4.0 (Apache Kafka 4.4), image tags
 # published on Docker Hub 2026-10-26. All five containers started and healthy on 2026-11-08.
