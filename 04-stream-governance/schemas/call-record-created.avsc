@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "CallRecordCreated",
+  "namespace": "com.example.billing",
+  "doc": "One call detail record: a call, a text or a data session. No direct identifiers; the key is a pseudonymous subscriber reference.",
+  "fields": [
+    {"name": "recordId", "type": "string", "doc": "CDR id, e.g. CDR-1001601"},
+    {"name": "recordType", "type": "string", "doc": "VOICE|SMS|DATA|ROAMING_VOICE|ROAMING_DATA|UNKNOWN"},
+    {"name": "cellId", "type": "string", "doc": "Serving cell, e.g. CELL-0412"},
+    {"name": "durationSec", "type": "long", "doc": "Seconds for a call or a session; 0 for a text"},
+    {"name": "startTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the call or session started"},
+    {"name": "eventTime", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the record was created"}
+  ]
+}

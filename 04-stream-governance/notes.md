@@ -150,8 +150,10 @@ Source: course module 16 + docs https://docs.confluent.io/cloud/current/stream-g
 - **Request access**: "Read only" → `DeveloperRead`; "Read and Write" → `DeveloperRead` +
   `DeveloperWrite`. The owner gets an email (if `ownerEmail` is set); approvers are the
   `ResourceOwner` or admins. Requests expire after 30 days.
-- **Not available for Basic clusters**, and not for Confluent Platform topics (USM topics are
-  discoverable only) [V].
+- **Access requests are not available for topics on Basic clusters**, and not for Confluent
+  Platform topics (USM topics are discoverable only) [V]. The docs exclude only the request
+  workflow on Basic: searching and browsing Basic topics in Data Portal is not excluded (docs read
+  2026-11-15; the lab browses `cc-basic` this way) [V].
 - Side effect that matters: the approved requests are a **list of consumers** per data product.
   You need that list to retire a `.v1` topic.
 
@@ -272,7 +274,7 @@ sequenceDiagram
   participant TF as Terraform apply
   Dev->>CI: PR: add optional field roamingPartner (default null)
   CI->>CI: lint (docs, defaults, naming, additive only)
-  CI->>SR: POST /compatibility/subjects/SUBJECT/versions/latest
+  CI->>SR: POST /compatibility/subjects/SUBJECT/versions (all versions if TRANSITIVE)
   SR-->>CI: is_compatible=true
   CI-->>Dev: plan + compatibility report on PR
   Dev->>TF: merge to main
@@ -367,7 +369,7 @@ Questions an architect asks the team that owns the platform:
    Yes, if you let it. An approval creates a role binding outside Terraform, and the next plan shows
    drift. Either the pipeline imports approved grants into Git, or Data Portal is used for
    discovery and the request opens a PR. I would choose by volume: few requests → PR; many → import
-   job. Also: it does not work on Basic clusters, nor for CP topics.
+   job. Also: requests do not work for topics on Basic clusters, nor for CP topics.
 
 9. **"What does Advanced cost you beyond money?"**
    It cannot be downgraded per environment. It is needed for rules (CEL, migration, encryption),

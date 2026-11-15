@@ -18,7 +18,7 @@ See the internals from `notes.md` happen, on a cluster you can break:
 | E3 | Compacted topic with tombstones | Log cleaner, active segment, `delete.retention.ms` | Current-state topics; GDPR limits |
 | E4 | KIP-848 consumer group | Server-side assignment, incremental rebalance | Rolling deploys on OpenShift |
 | E5 | Share group (CP 8.2+ / Kafka 4.2+) | Per-record acquisition | Work queues vs Artemis |
-| E6 | Stop the controller, then a broker | KRaft quorum, leader election | Why a 3rd site for controllers |
+| E6 | Stop 1, then 2 of 3 controllers, then a broker | KRaft quorum majority, leader election | Why a 3rd site for controllers |
 | E7 | Tiered storage to MinIO (optional) | Segment upload, hotset | Replays off broker disks |
 
 # Environment
@@ -27,31 +27,44 @@ See the internals from `notes.md` happen, on a cluster you can break:
 cannot show replication (RF > 1 is impossible, ISR is always just the leader). Use the 3-broker
 override below. It runs **next to** `00-lab-setup` (own project name and ports) or alone.
 
-Design of the override: **one dedicated KRaft controller + three brokers**. A single controller
-is a lab shortcut (production: 3 or 5 voters); it keeps the controller alive when we stop
-brokers, so ISR changes can still be recorded. E6 then stops the controller on purpose.
+Design of the override: **three dedicated KRaft controllers + three brokers**. Dedicated
+controllers (not combined with the brokers) keep the quorum alive when we stop brokers, so ISR
+changes can still be recorded. Three voters is the smallest quorum that survives losing one; E6
+then stops one controller, and then a second, on purpose.
 
 # Prerequisites
 
-- Docker with ~4 GB free memory.
+- Docker with ~5 GB free memory (three brokers + three small controllers) [V].
 - `00-lab-setup` read for image conventions; this file uses the same tag (`cp-server:8.4.0`,
   Kafka 4.4). If 8.4.0 misbehaves, use the latest 8.3.x as `00-lab-setup` suggests. Share groups
   (E5) need Kafka 4.2+ [V].
 - Licence: the developer licence covers **one broker per cluster**. This is a separate,
   three-broker cluster, so it starts a **30-day trial** for this cluster only (it does not touch
   `dc-a`/`dc-b`). Fine for a lab; `down -v` and start again if it expires.
+- The lab helpers loaded in this terminal
+  (`source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh`): the commands below use
+  `$LAB/..` (the course folder), so they work from any directory.
 - Start clean if you ran this lab before, because the topics below would already exist:
-  `docker compose -f 08-kafka-internals/docker-compose.3broker.yml down -v` (the start step below brings it up again).
+  `( cd "$LAB/../08-kafka-internals" && docker compose -f docker-compose.3broker.yml down -v )`
+  (the start step below brings it up again).
 
-`08-kafka-internals/docker-compose.3broker.yml` (create it from this snippet):
+Save this snippet as `$LAB/../08-kafka-internals/docker-compose.3broker.yml`:
 
 ```yaml
 name: internals
 
+x-controller-env: &controller-env
+  CLUSTER_ID: "q1Sh-9_ISia_zwGINzRvyQ"
+  KAFKA_PROCESS_ROLES: "controller"
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "100@c1:29093,101@c2:29093,102@c3:29093"
+  KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT"
+  KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+
 x-broker-env: &broker-env
   CLUSTER_ID: "q1Sh-9_ISia_zwGINzRvyQ"          # any base64 UUID, same for all nodes
   KAFKA_PROCESS_ROLES: "broker"
-  KAFKA_CONTROLLER_QUORUM_VOTERS: "100@c1:29093"
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "100@c1:29093,101@c2:29093,102@c3:29093"
   KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
   KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
   KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
@@ -69,19 +82,30 @@ services:
     image: confluentinc/cp-server:8.4.0            # same tag as 00-lab-setup
     hostname: c1
     environment:
-      CLUSTER_ID: "q1Sh-9_ISia_zwGINzRvyQ"
+      <<: *controller-env
       KAFKA_NODE_ID: 100
-      KAFKA_PROCESS_ROLES: "controller"
       KAFKA_LISTENERS: "CONTROLLER://c1:29093"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "100@c1:29093"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT"
-      KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+
+  c2:
+    image: confluentinc/cp-server:8.4.0
+    hostname: c2
+    environment:
+      <<: *controller-env
+      KAFKA_NODE_ID: 101
+      KAFKA_LISTENERS: "CONTROLLER://c2:29093"
+
+  c3:
+    image: confluentinc/cp-server:8.4.0
+    hostname: c3
+    environment:
+      <<: *controller-env
+      KAFKA_NODE_ID: 102
+      KAFKA_LISTENERS: "CONTROLLER://c3:29093"
 
   b1:
     image: confluentinc/cp-server:8.4.0
     hostname: b1
-    depends_on: [c1]
+    depends_on: [c1, c2, c3]
     ports: ["39092:39092"]
     environment:
       <<: *broker-env
@@ -92,7 +116,7 @@ services:
   b2:
     image: confluentinc/cp-server:8.4.0
     hostname: b2
-    depends_on: [c1]
+    depends_on: [c1, c2, c3]
     ports: ["39093:39093"]
     environment:
       <<: *broker-env
@@ -103,7 +127,7 @@ services:
   b3:
     image: confluentinc/cp-server:8.4.0
     hostname: b3
-    depends_on: [c1]
+    depends_on: [c1, c2, c3]
     ports: ["39094:39094"]
     environment:
       <<: *broker-env
@@ -115,7 +139,7 @@ services:
 Start and set helpers:
 
 ```bash
-cd 08-kafka-internals
+cd "$LAB/../08-kafka-internals"
 docker compose -f docker-compose.3broker.yml up -d
 export K="docker exec -i internals-b1-1"           # run tools inside b1
 export BS="b1:29092,b2:29092,b3:29092"
@@ -123,7 +147,8 @@ $K kafka-metadata-quorum --bootstrap-server $BS describe --status
 $K kafka-broker-api-versions --bootstrap-server $BS | grep -c 'b[123]:29092'
 ```
 
-Expected: quorum status with `LeaderId: 100`; `3` brokers. Ports 39092–39094 do not clash with
+Expected: quorum status with `LeaderId:` one of 100–102 and `CurrentVoters` listing 100, 101 and
+102 [V: output format]; `3` brokers. Ports 39092–39094 do not clash with
 `00-lab-setup` (9092/9093, 8081/8082, 8083, 8090/8091).
 
 # E1 — ISR shrink and expand
@@ -196,7 +221,7 @@ $K kafka-console-consumer --bootstrap-server $BS --topic billing.call-record.cre
 
 Expected: ISR back to 3 for all partitions (expand), leadership may stay on b1 until preferred
 leader election runs (`auto.leader.rebalance.enable`, default every 5 min) or you run
-`kafka-leader-election --election-type preferred --all-topic-partitions`. `SUB-1005678` is now visible.
+`kafka-leader-election --election-type preferred --all-topic-partitions` (E6 does). `SUB-1005678` is now visible.
 
 # E2 — acks and cross-DC latency
 
@@ -301,26 +326,55 @@ Talking points: duplicates per key are normal until cleaning; a consumer offline
 $K kafka-topics --bootstrap-server $BS --create --topic network.cell-load.measured.v1 \
   --partitions 6 --replication-factor 3
 
-# producer in the background: one record per second
-docker exec -d internals-b1-1 bash -c 'for i in $(seq 1 100000); do echo "CELL-$((i%6)):load=$((RANDOM%80))"; sleep 1; done \
+# producer in the background: five records per second, 60 cell keys so all 6 partitions get data
+docker exec -d internals-b1-1 bash -c 'for i in $(seq 1 100000); do echo "CELL-$((i%60)):load=$((RANDOM%80))"; sleep 0.2; done \
   | kafka-console-producer --bootstrap-server b1:29092 --topic network.cell-load.measured.v1 \
     --reader-property parse.key=true --reader-property key.separator=:'
 
-# two consumers with the new protocol
-for n in 1 2; do
-  docker exec -d internals-b1-1 kafka-console-consumer --bootstrap-server b1:29092 \
+# start consumer c<n> with the new protocol in the background; every record it reads goes to
+# /tmp/c<n>.log with the time it was read, the partition and the offset
+kip848() {
+  docker exec -d internals-b1-1 bash -c "kafka-console-consumer --bootstrap-server b1:29092 \
     --topic network.cell-load.measured.v1 --group analytics-kip848 \
-    --command-property group.protocol=consumer --command-property client.id=c$n
-done
+    --command-property group.protocol=consumer --command-property client.id=c$1 \
+    --formatter-property print.partition=true --formatter-property print.offset=true 2>&1 \
+    | while IFS= read -r l; do echo \"\$(date +%T) c$1 \$l\"; done >> /tmp/c$1.log"
+}
+kip848 1; kip848 2
 sleep 10
 $K kafka-consumer-groups --bootstrap-server $BS --describe --group analytics-kip848 --members --verbose
 $K kafka-consumer-groups --bootstrap-server $BS --describe --group analytics-kip848 --state
 ```
 
 Expected: 2 members, 3 partitions each; `--state` shows the assignor (`uniform`) and the group
-type/protocol (`consumer`) [V: column names vary by version]. Add a third consumer
-(`client.id=c3`), describe again: 2 partitions each. The first two consumers never stop
-consuming — only moved partitions pause.
+type/protocol (`consumer`) [V: column names vary by version].
+
+Now change the group while you watch it. In a **second terminal**, follow all members' logs
+(lines look like `14:02:07 c1 Partition:4 Offset:211 load=37` [V]):
+
+```bash
+docker exec internals-b1-1 tail -F /tmp/c1.log /tmp/c2.log /tmp/c3.log
+```
+
+Back in the first terminal: scale out, then roll a member the way a rolling deploy does (stop it,
+start it again):
+
+```bash
+kip848 3                                             # a third member joins
+sleep 20
+$K kafka-consumer-groups --bootstrap-server $BS --describe --group analytics-kip848 --members --verbose
+docker exec internals-b1-1 pkill -f 'client.id=c1'   # c1 leaves (clean shutdown)
+sleep 10
+kip848 1                                             # c1 is back
+sleep 20
+$K kafka-consumer-groups --bootstrap-server $BS --describe --group analytics-kip848 --members --verbose
+```
+
+Expected: after c3 joins, 2 partitions each; with c1 gone, c2 and c3 hold 3 each; after c1
+returns, 2 each again. In the `tail`, the members that keep partitions print several lines a
+second through all three changes, with **no gap** in their timestamps: they never stop
+consuming. Only a partition that moves goes quiet for a few seconds, then shows up under its new
+owner, continuing from the committed offset.
 
 Compare with a classic group: start two consumers in `analytics-classic` **without** the
 `group.protocol` property and list group types:
@@ -349,40 +403,88 @@ for n in 1 2; do
   docker exec -d internals-b1-1 bash -c "kafka-console-share-consumer --bootstrap-server b1:29092 \
     --topic network.cell-load.jobs.v1 --group sg-workers > /tmp/w$n.txt 2>&1"
 done
-seq 1 50 | sed 's/^/job-/' | $K kafka-console-producer --bootstrap-server b1:29092 \
-  --topic network.cell-load.jobs.v1
+sleep 10      # let both workers join first: a new share group starts at the latest offset
+# 200 jobs, one every 50 ms: many small batches, not one batch that a single worker takes whole
+for i in $(seq 1 200); do echo "job-$i"; sleep 0.05; done | $K kafka-console-producer \
+  --bootstrap-server b1:29092 --topic network.cell-load.jobs.v1
 sleep 5
-docker exec internals-b1-1 bash -c 'wc -l /tmp/w1.txt /tmp/w2.txt'
+docker exec internals-b1-1 bash -c 'grep -c "^job-" /tmp/w1.txt /tmp/w2.txt; head -5 /tmp/w1.txt /tmp/w2.txt'
 $K kafka-share-groups --bootstrap-server $BS --describe --group sg-workers
 ```
 
-Expected: **both** workers received jobs from a **single partition** (a classic group would give
-the partition to one member). Their outputs interleave — no ordering. If the tools are missing,
-your image is older than Kafka 4.2 / CP 8.2 — skip and read notes part 2 §2.9.
+Expected: **both** counts above 0, together about 200, from a **single partition** (a classic
+group would give the partition to one member). The split need not be even. The `head` output
+shows the job numbers interleave across the workers — no ordering. If one worker still got
+everything, run the producer loop again with `sleep 0.2`. If the tools are missing, your image is
+older than Kafka 4.2 / CP 8.2 — skip and read notes part 2 §2.9.
 
 # E6 — control plane outage
 
+E1 left most partition leaders on b1 (b2 and b3 came back as followers). Move leadership back to
+the preferred replicas first, so that stopping b2 below takes away a leader:
+
+```bash
+$K kafka-leader-election --bootstrap-server $BS --election-type PREFERRED --all-topic-partitions
+$K kafka-topics --bootstrap-server $BS --describe --topic billing.call-record.created.v1
+$K kafka-metadata-quorum --bootstrap-server $BS describe --status | grep -E 'LeaderId|CurrentVoters'
+```
+
+Expected: the election reports the partitions it moved ("Valid replica already elected" for the
+rest) [V]. In the describe, each partition's `Leader:` is now the first ID in its `Replicas:`, so
+the three partitions usually have three different leaders. **Find the partition with
+`Leader: 2`.** If none has it, stop the broker that leads one of the other partitions instead of
+b2 below — but not b1: the tools run inside b1.
+
+Lose one controller. Read c1, c2, c3 as DC-A, DC-B and a third site:
+
 ```bash
 docker stop internals-c1-1
+sleep 10
+$K kafka-metadata-quorum --bootstrap-server $BS describe --status | grep -E 'LeaderId|CurrentVoters'
+$K kafka-topics --bootstrap-server $BS --create --topic quorum-ok --partitions 1 --replication-factor 3
+```
+
+Expected: `LeaderId` is 101 or 102 (a new election if c1 was the leader); the topic is created.
+Two of three voters are a majority, so metadata changes still work.
+
+Lose a second controller — one of three is no majority:
+
+```bash
+docker stop internals-c2-1
+sleep 10
+$K timeout 20 kafka-metadata-quorum --bootstrap-server $BS describe --status 2>&1 | tail -2
+docker logs --since 20s internals-c3-1 2>&1 | grep -E 'Candidate|Prospective' | tail -3
 # data plane still works for partitions whose leaders are alive
 $K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 500 \
   --record-size 200 --throughput -1 --producer-props bootstrap.servers=$BS acks=all
 # metadata changes do not
-timeout 40 $K kafka-topics --bootstrap-server $BS --create --topic should-fail \
+$K timeout 40 kafka-topics --bootstrap-server $BS --create --topic should-fail \
   --partitions 1 --replication-factor 1 2>&1 | tail -2
-# now lose a broker while the controller is down
+# now lose a broker while the quorum has no majority
 docker stop internals-b2-1
 sleep 15
 $K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 500 \
   --record-size 200 --throughput -1 --producer-props bootstrap.servers=b1:29092 acks=all \
   delivery.timeout.ms=20000 request.timeout.ms=10000 2>&1 | tail -3
+# one controller back: 2 of 3 again
+docker start internals-c2-1
+sleep 20
+$K kafka-topics --bootstrap-server b1:29092 --describe --topic billing.call-record.created.v1
+$K kafka-producer-perf-test --topic billing.call-record.created.v1 --num-records 500 \
+  --record-size 200 --throughput -1 --producer-props bootstrap.servers=b1:29092 acks=all 2>&1 | tail -1
 docker start internals-c1-1 internals-b2-1
 ```
 
-Expected: first produce OK; topic creation times out; after b2 stops, writes to partitions that
-b2 led fail (no controller → no new leader, and the ISR cannot shrink, so `acks=all` on other
-partitions may also stall). After restart: elections, writes resume. Talking point: this is what
-"losing quorum majority" means — and why 2 DCs need a 3rd-site controller.
+Expected: c3 is running, but there is no leader: the quorum describe gets no answer within 20 s,
+and c3's log shows it starting election after election [V: exact log wording]. The first produce
+works (all leaders alive); topic creation times out. After b2 stops, writes to the partition b2
+led fail: no controller can fence b2 or elect a new leader, and the ISR cannot shrink, so
+`acks=all` on the other partitions may stall too. With c2 back, the quorum has a leader again; b2
+is fenced after `broker.session.timeout.ms` (9 s), its partition gets a new leader, the ISR
+shrinks to 2 and the last produce succeeds. Talking point: with only two sites, one of them holds
+2 of the 3 voters, and losing that site is the "1 of 3" state — the surviving controller is up and
+still cannot act. A third site with one voter makes every single-site loss the "2 of 3" state.
+That is why 2 DCs need a 3rd-site controller.
 
 # E7 — tiered storage on MinIO (optional) [V]
 
@@ -443,7 +545,9 @@ The internals are not configurable in Confluent Cloud (RF is fixed at 3, no brok
 hidden, no unclean election). What you **can** declare are the topic-level settings from E1 and
 E3. On `cc-basic` — `billing.call-record.created.v1` already exists there (owned by
 `00-lab-setup`, where you would set `min.insync.replicas`), so this creates only the compacted
-current-state topic. Save as `08-kafka-internals/terraform/main.tf`:
+current-state topic. Save as `$LAB/../08-kafka-internals/terraform/main.tf`. It has no schema on
+purpose, only to show the topic settings; a real data product goes through module 07's golden
+module ("no schema, no topic").
 
 ```hcl
 terraform {
@@ -479,6 +583,11 @@ resource "confluent_kafka_topic" "subscriber_balance_latest" {
     secret = local.base.sa_kafka_basic_api_secret
   }
 }
+```
+
+```bash
+cd "$LAB/../08-kafka-internals/terraform"
+terraform init && terraform apply
 ```
 
 CC accepts only a subset of topic configs (e.g. `min.insync.replicas`, `cleanup.policy`,
@@ -522,9 +631,9 @@ For a Multi-Region Cluster the placement goes on the topic as
 | E1 | ISR 3 → 2 → 1 → 3; `NOT_ENOUGH_REPLICAS` for acks=all at ISR 1; acks=1 accepted; visibility gated by ELR (note what you saw) |
 | E2 | acks=all latency rises by ~the injected RTT; acks=1 does not |
 | E3 | 7 records before roll; latest-per-key + gaps after; tombstone gone after `delete.retention.ms` |
-| E4 | incremental reassignment; group protocol `consumer`; classic assignor config rejected |
+| E4 | incremental reassignment, no gap in the logs of members that keep partitions; group protocol `consumer`; classic assignor config rejected |
 | E5 | two workers sharing one partition |
-| E6 | produce OK, metadata ops fail, no failover without controller |
+| E6 | 1 of 3 controllers down: metadata still works; 2 of 3 down: produce OK, metadata ops fail, no failover; one back: elections, writes resume |
 | E7 | segments in MinIO, local dir trimmed |
 
 # Teardown
@@ -532,9 +641,9 @@ For a Multi-Region Cluster the placement goes on the topic as
 ```bash
 docker run --rm --net container:internals-b3-1 --cap-add NET_ADMIN nicolaka/netshoot tc qdisc del dev eth0 root 2>/dev/null
 docker exec internals-b1-1 pkill -f 'ConsoleConsumer|ConsoleShareConsumer|ConsoleProducer' 2>/dev/null
-docker compose -f docker-compose.3broker.yml down -v
-# Terraform part
-terraform destroy
+( cd "$LAB/../08-kafka-internals" && docker compose -f docker-compose.3broker.yml down -v )
+# Terraform part (saved in 08-kafka-internals/terraform/)
+( cd "$LAB/../08-kafka-internals/terraform" && terraform destroy )
 ```
 
 # Cost note
