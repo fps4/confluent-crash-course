@@ -24,7 +24,7 @@ the cloud.
 # Before you start
 
 ```bash
-source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh     # a, b, sra, srb, LAB, DCA_ID, DCB_ID
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh     # a, b, sra, srb, LAB, DCA_ID, DCB_ID
 ( cd "$LAB" && docker compose --profile mm2 down -v && docker compose up -d )   # start clean: IDs below assume empty registries
 lab_check                                                          # ends with "All good."
 ```

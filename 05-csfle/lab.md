@@ -29,7 +29,7 @@ Azure: one resource group with a Key Vault (Azure RBAC mode), one RSA key, and t
 - `az` CLI logged in; rights to create Key Vault and role assignments (Owner or User Access Administrator on the resource group) and app registrations.
 - The lab helpers from `00-lab-setup` (`LAB`, and `sra` / `a` to run a tool inside `sr-a` / `dc-a`):
   ```bash
-  source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh
+  source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh
   ```
 - Java 17+ and **Confluent Platform 8.x tools** with the Avro console producer/consumer. Easiest: run them inside the `dc-a` Schema Registry container from `00-lab-setup` (it ships `kafka-avro-console-producer`); the commands below do that with `sra`. Check the Azure encryption jar is present:
   ```bash

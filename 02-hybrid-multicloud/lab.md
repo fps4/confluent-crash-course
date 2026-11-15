@@ -29,7 +29,7 @@ Confluent Cloud until part D2. Do these steps in the terminal you will use for t
 
 ```bash
 # 1. Load the helpers (a, b, LAB, DCA_ID, DCB_ID). Needed in every new terminal.
-source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh   # adjust to where you cloned
+source ~/labs/hybrid-kafka-on-azure/00-lab-setup/lab-env.sh   # adjust to where you cloned
 
 # 2. Start clean, because module 01 created the same topics (deletes all topics and links).
 #    Includes the Connect worker for part C.
