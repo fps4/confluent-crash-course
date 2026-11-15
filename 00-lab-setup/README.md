@@ -12,7 +12,7 @@ Three environments, from free to billable:
 |---|---|---|---|
 | `local` | Docker Compose: two single-node KRaft clusters **`dc-a`** and **`dc-b`** (Confluent Server 8.4.0), one Schema Registry each (**`sr-a`**, **`sr-b`**), optional Kafka Connect worker for MirrorMaker 2 | Cluster Linking CP↔CP, failover/failback, MM2, Schema Linking CP→CP, data contracts with rules, broker-side schema ID validation | Free (developer licence, see below) |
 | `cc-basic` | Confluent Cloud environment **`crash-course`**, Basic cluster **`cc-basic`** on Azure **`westeurope`**, Schema Registry (Stream Governance **Essentials**), service account **`sa-crash-admin`** with API keys | Cloud clients, Schema Linking CP→CC, governance basics, Terraform practice | Near zero: Basic's first eCKU is free; you pay data in/out and storage. Trial credits cover it |
-| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) and/or Enterprise cluster **`cc-ent`** (always private, Azure PrivateLink Attachment) in the same environment. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC as Cluster Linking destination, CC broker-side validation, Private Link (module 02) | Billable per hour. See "Cost" |
+| `paid-session` | One day: Dedicated cluster **`cc-paid`** (1 CKU, public) and/or Enterprise cluster **`cc-ent`** (always private, Azure PrivateLink Attachment) in the same environment. Created in the morning, destroyed the same day | Hybrid source-initiated link **dc-a → CC**, CC as Cluster Linking destination, CC broker-side validation, Private Link (module 03) | Billable per hour. See "Cost" |
 
 Versions pinned on 2026-11-07:
 
@@ -25,6 +25,66 @@ Versions pinned on 2026-11-07:
 
 CP 8.4 is two weeks old today. If something in 8.4.0 breaks a lab, change the four image tags to
 the latest 8.3.x and note it in the lab. [V]
+
+# The running example
+
+Every module uses the same organisation: a **mobile operator**. Billing, the network operations
+centre (NOC) and customer care run on Confluent Platform in two data centres, `dc-a` and `dc-b`.
+The data and AI teams in Azure want the same events for fraud and churn models, live and with a
+year of history, and must not put load on the operational clusters.
+
+| Topic | One record is | Key | Owner | Class |
+|---|---|---|---|---|
+| `billing.call-record.created.v1` | one call detail record (CDR): a call, a text or a data session | subscriber reference `SUB-1001601` | `billing-team` | C1: no direct identifiers; the subscriber reference is a pseudonym |
+| `billing.call-record.validated.v1` | the same record, on a Confluent Cloud topic with broker-side validation | `SUB-…` | `billing-team` | C1 |
+| `billing.subscriber-balance.latest.v1` | current prepaid balance of one subscriber (compacted) | `SUB-…` | `billing-team` | C1 |
+| `noc.cell-alarm.raised.v1` | one alarm from a radio cell | alarm id `ALM-100001` | `noc-team` | C1 |
+| `noc.cell-alarm.history.v1` | the alarm history, kept longer | `ALM-…` | `noc-team` | C1 |
+| `network.cell-load.measured.v1` | the load of one cell in one minute | none | `network-team` | C1 |
+| `network.cell-load.forecast.v1` | the predicted load of one cell for one slot | `CELL-0412` | `network-team` | C1 |
+| `network.cell-load.jobs.v1` | a work item (the share-group demo) | none | `network-team` | C1 |
+| `network.cell-config.changed.v1` | a cell's configuration changed | `CELL-…` | `network-team` | C1 |
+| `customers.subscriber-profile.v1` | one subscriber's profile, with synthetic personal data | `SUB-…` | `care-team` | C3: PII |
+
+The two schemas most labs use (Avro). Fields in **customers.subscriber-profile.v1** tagged `PII`:
+`customerName`, `msisdn`, `email`, `nationalId`.
+
+```json
+{"type":"record","name":"CallRecordCreated","namespace":"com.example.billing",
+ "doc":"One call detail record: a call, a text or a data session. No direct identifiers; the key is a pseudonymous subscriber reference.",
+ "fields":[
+  {"name":"recordId","type":"string","doc":"CDR id, e.g. CDR-1001601"},
+  {"name":"recordType","type":"string","doc":"VOICE|SMS|DATA|ROAMING_VOICE|ROAMING_DATA|UNKNOWN"},
+  {"name":"cellId","type":"string","doc":"Serving cell, e.g. CELL-0412"},
+  {"name":"durationSec","type":"long","doc":"Seconds for a call or a session; 0 for a text"},
+  {"name":"startTime","type":{"type":"long","logicalType":"timestamp-millis"}},
+  {"name":"eventTime","type":{"type":"long","logicalType":"timestamp-millis"}}
+ ]}
+```
+
+```json
+{"type":"record","name":"SubscriberProfile","namespace":"com.example.customers",
+ "doc":"One subscriber's profile. Synthetic personal data for the governance and encryption labs.",
+ "fields":[
+  {"name":"subscriberRef","type":"string","doc":"Pseudonymous reference, e.g. SUB-1001601"},
+  {"name":"customerName","type":"string"},
+  {"name":"msisdn","type":"string","doc":"Phone number"},
+  {"name":"email","type":"string"},
+  {"name":"nationalId","type":"string"},
+  {"name":"plan","type":"string","doc":"PREPAID|POSTPAID|BUSINESS"},
+  {"name":"eventTime","type":{"type":"long","logicalType":"timestamp-millis"}}
+ ]}
+```
+
+Sample records:
+
+```json
+{"recordId":"CDR-1001601","recordType":"VOICE","cellId":"CELL-0412","durationSec":184,"startTime":1762499000000,"eventTime":1762499184000}
+{"subscriberRef":"SUB-1001601","customerName":"Anna de Vries","msisdn":"+31612345678","email":"anna@example.org","nationalId":"ID1234567","plan":"POSTPAID","eventTime":1762499000000}
+```
+
+Consumer groups and service accounts follow the teams: `billing-rater` (the billing engine reading
+call records), `alarm-router` (the NOC), `cells-ui`, `analytics-*` for the Azure teams.
 
 # Licence terms (checked 2026-11-07)
 
@@ -68,7 +128,7 @@ export LAB=~/labs/confluent-crash-course/00-lab-setup
 cd "$LAB"
 
 docker compose up -d                    # dc-a, sr-a, dc-b, sr-b
-docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2 (module 01 part C only)
+docker compose --profile mm2 up -d      # same, plus the Connect worker for MM2 (module 02 part C only)
 docker compose ps                       # dc-a and dc-b should be "healthy"
 ```
 
@@ -122,7 +182,7 @@ stacks.
 ## Optional: Control Center (profile `c3`)
 
 A web UI for both clusters: topics, consumer groups and lag, cluster links and mirror topics.
-Useful for watching module 01's failover. No lab depends on it; every "Expected" is CLI output.
+Useful for watching module 02's failover. No lab depends on it; every "Expected" is CLI output.
 
 ```bash
 cd "$LAB" && docker compose --profile mm2 --profile c3 up -d
@@ -177,10 +237,9 @@ talking to; `docker context show` does the same.
 
 ## Next
 
-The local stack is all module 01 needs for parts A–C, and all module 08 needs for its local part.
-The suggested order in the [course README](../README.md#modules--suggested-order) starts with
-[08](../08-linking-and-contracts/lab.md), then [01](../01-hybrid-multicloud/lab.md). Set up
-`cc-basic` (below) when a lab first asks for it.
+The local stack is all module 02 needs for parts A–C, and all module 01 needs for its local part.
+Start with [module 01](../01-linking-and-contracts/lab.md) and go in order
+([course README](../README.md#modules)). Set up `cc-basic` (below) when a lab first asks for it.
 
 # `cc-basic` — create with Terraform
 
@@ -232,7 +291,7 @@ What the base creates (and what it does not):
 | Schema Registry | data source | Auto-provisioned per environment |
 | Service account | `sa-crash-admin` | `EnvironmentAdmin` on `crash-course` (lab shortcut) |
 | API keys | Kafka key for `cc-basic`, SR key | Secrets only in state and `terraform output -raw` |
-| Topics | `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` | PII-free. `customers.customer-journey.v1` (PII) is created by the CSFLE/governance modules |
+| Topics | `billing.call-record.created.v1`, `noc.cell-alarm.raised.v1`, `network.cell-load.measured.v1` | PII-free. `customers.subscriber-profile.v1` (PII) is created by the CSFLE/governance modules |
 
 Other modules reference these values with `terraform output`, or with a `terraform_remote_state`
 data source pointing at `00-lab-setup/terraform/terraform.tfstate`.
@@ -242,7 +301,7 @@ data source pointing at `00-lab-setup/terraform/terraform.tfstate`.
 ```bash
 cd "$LAB/terraform"
 terraform apply -var enable_paid_dedicated=true                 # cc-paid, Dedicated 1 CKU, public
-terraform apply -var enable_paid_enterprise_private=true        # cc-ent + PrivateLink Attachment (module 02)
+terraform apply -var enable_paid_enterprise_private=true        # cc-ent + PrivateLink Attachment (module 03)
 # ... labs ...
 terraform apply -var enable_paid_dedicated=false -var enable_paid_enterprise_private=false
 ```
@@ -254,7 +313,7 @@ Which cluster for which lab:
 | Source-initiated link from the laptop (`dc-a` → CC) | `cc-paid` (Dedicated, public) | CP → CC needs a Dedicated or privately networked Enterprise destination. Enterprise is always private, so a laptop can only reach it through an Azure private endpoint + VPN. Dedicated with public endpoints works over the internet |
 | CC as Cluster Linking destination | `cc-paid` or `cc-ent` | Only Dedicated, Enterprise (and Freight on AWS) can be destinations |
 | Broker-side schema ID validation in CC | `cc-paid` | Dedicated only |
-| Private Link | `cc-ent` | Cheaper and faster to create than a Dedicated private network; Azure side is in module 02 |
+| Private Link | `cc-ent` | Cheaper and faster to create than a Dedicated private network; Azure side is in module 03 |
 
 Rules for the day: create in the morning, check the Billing page before you stop, destroy before
 you sleep. Dedicated provisioning can take tens of minutes or longer. [V]

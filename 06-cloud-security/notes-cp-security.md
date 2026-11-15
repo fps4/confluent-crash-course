@@ -1,5 +1,5 @@
 ---
-title: 05b — Confluent Platform security (the on-prem half)
+title: 06b — Confluent Platform security (the on-prem half)
 subtitle: Listeners, mTLS, SASL/OAUTHBEARER with Entra ID, Confluent Server RBAC with MDS, quotas incl. the Cluster Link principal, audit logs. CP 8.x = Kafka 4.x, KRaft only. Checked 2026-11-07.
 ---
 
@@ -69,7 +69,7 @@ sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginMo
 ```
 
 - The **allowed URLs system property** applies to brokers too (they fetch the JWKS). Since Kafka 4.0 the default is an empty list (CVE-2025-27817 fix). Forgetting it is the classic failure after the CP 8 upgrade.
-- **Dependency on Entra**: brokers cache the JWKS; clients need Entra to get new tokens (lifetime about an hour). An Entra outage longer than token lifetime stops new connections. For mission-critical producers (for example order and tracking events) decide consciously: OAuth with a long enough token lifetime and good alerting, or mTLS for those few services so operations do not stop when the cloud IdP has a bad hour. Raise this point early in the design.
+- **Dependency on Entra**: brokers cache the JWKS; clients need Entra to get new tokens (lifetime about an hour). An Entra outage longer than token lifetime stops new connections. For mission-critical producers (for example call records and NOC alarms) decide consciously: OAuth with a long enough token lifetime and good alerting, or mTLS for those few services so operations do not stop when the cloud IdP has a bad hour. Raise this point early in the design.
 
 ### 2.4 Confluent Server RBAC with MDS
 
@@ -78,7 +78,7 @@ Source: CP RBAC overview, configure MDS for OAuth.
 - **Metadata Service (MDS)** runs inside Confluent Server brokers. It is the system of record for role bindings, issues tokens to CP components, and serves the RBAC REST API that the `confluent` CLI and Control Center use.
 - The **Confluent Server Authorizer** checks both RBAC role bindings and ACLs: `authorizer.class.name=io.confluent.kafka.security.authorizer.ConfluentServerAuthorizer`, `confluent.authorizer.access.rule.providers=CONFLUENT,KRAFT_ACL` in KRaft mode (was `ZK_ACL` before) **[V]**.
 - User store: `confluent.metadata.server.user.store=OAUTH` (IdP only) or `LDAP_WITH_OAUTH` (both, for migration). OAuth settings: `confluent.metadata.server.oauthbearer.jwks.endpoint.url`, `…expected.issuer` (must match `iss` exactly — v1/v2 mismatch again), `…expected.audience`, `…sub.claim.name`, `…groups.claim.name`.
-- Same role names as in CC: `SystemAdmin`, `UserAdmin`, `ClusterAdmin`, `Operator`, `SecurityAdmin`, `ResourceOwner`, `DeveloperRead/Write/Manage`, `AuditAdmin` … with prefix resource patterns (`--resource Topic:orders. --prefix`).
+- Same role names as in CC: `SystemAdmin`, `UserAdmin`, `ClusterAdmin`, `Operator`, `SecurityAdmin`, `ResourceOwner`, `DeveloperRead/Write/Manage`, `AuditAdmin` … with prefix resource patterns (`--resource Topic:billing. --prefix`).
 - Schema Registry, Connect, ksqlDB, REST Proxy and Control Center integrate with MDS for RBAC; components with REST endpoints do **not** accept mTLS-derived principals for RBAC (they need basic auth or tokens).
 - Requires the commercial **confluent-server** component (Enterprise licence). Strimzi / Apache Kafka have ACLs only.
 - On OpenShift: CFK has CRs for RBAC (`ConfluentRolebinding`) so bindings live in Git and ArgoCD applies them.
@@ -86,7 +86,7 @@ Source: CP RBAC overview, configure MDS for OAuth.
 ### 2.5 Aligning on-prem RBAC with Entra and with CC
 
 - `confluent.oauth.groups.claim.name` tells the broker which claim holds group membership. RBAC can bind to `Group:<value>`.
-- For workloads (client credentials), **use the `roles` claim** as the "groups" claim: set `confluent.oauth.groups.claim.name=roles`, bind `Group:Kafka.Sites.Read` → `DeveloperRead` on `Topic:sites.` (prefix). Same reasons as in CC: app roles must be assigned directly to the SP, groups overage, groups are GUIDs **[V]** (test that the broker accepts a non-`groups` claim name as group source).
+- For workloads (client credentials), **use the `roles` claim** as the "groups" claim: set `confluent.oauth.groups.claim.name=roles`, bind `Group:Kafka.Cells.Read` → `DeveloperRead` on `Topic:network.` (prefix). Same reasons as in CC: app roles must be assigned directly to the SP, groups overage, groups are GUIDs **[V]** (test that the broker accepts a non-`groups` claim name as group source).
 - Result: **one Entra app role = one access pattern, on-prem and in the cloud.** In CC the role is a pool filter; on-prem it is a `Group:` principal. Same governance flow (data-product owner approves the role assignment).
 
 ### 2.6 Quotas on-prem — including the Cluster Link
@@ -117,7 +117,7 @@ Source-initiated link: the reads happen on the on-prem brokers under the **local
 ### 2.8 Encryption at rest on-prem
 
 - Kafka has no built-in at-rest encryption. Use encrypted storage (OpenShift Data Foundation / storage-class encryption, LUKS) and for tiered storage the object store's encryption.
-- For fields that leave the DC: CSFLE (module 04).
+- For fields that leave the DC: CSFLE (module 05).
 
 ---
 
@@ -144,7 +144,7 @@ flowchart LR
   APP -- "2 SASL OAUTHBEARER" --> L1
   L1 -- "3 verify signature" --> J
   L1 --> AUTHZ
-  AUTHZ -- "4 Group:Kafka.Sites.Read -> DeveloperRead Topic:sites.*" --> MDS
+  AUTHZ -- "4 Group:Kafka.Cells.Read -> DeveloperRead Topic:network.*" --> MDS
   CFK --> MDS
   LINK --> AUTHZ
 ```

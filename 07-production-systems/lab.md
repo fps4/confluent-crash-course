@@ -1,7 +1,9 @@
 ---
-title: 06 — Lab — Production streaming systems
+title: 07 — Lab — Production streaming systems
 subtitle: A "no schema, no topic" golden Terraform module, a GitHub Actions CI sketch, quotas, lag monitoring, and the CFK/ArgoCD equivalent
 ---
+
+> **Video:** episode 7, "From “it works” to “it runs a business”" (coming soon). The video gives the reasoning; this lab lets you see it happen.
 
 **[V]** = check against current docs, your cluster type or your CLI version.
 
@@ -18,15 +20,16 @@ subtitle: A "no schema, no topic" golden Terraform module, a GitHub Actions CI s
 Uses `../00-lab-setup/` (`local` dc-a, `cc-basic`; optional `cc-paid` Dedicated from the
 paid session for a real CC quota). The three PII-free example topics in `cc-basic` are owned by
 `00-lab-setup`, so the golden module creates two **new** data products:
-`orders.location-assignment.changed.v1` (C1) and `sites.queue-length.forecast.v1` (C2).
-The PII schema for the negative test comes from `../03-stream-governance/schemas/`.
+`network.cell-config.changed.v1` (C1) and `network.cell-load.forecast.v1` (C2).
+The PII schema for the negative test comes from `../04-stream-governance/schemas/`.
 
 # Prerequisites
 
-- Lab 03 Part B understood (catalog qualified names, tags).
+- Lab 04 Part B understood (catalog qualified names, tags).
 - `confluent` CLI v4.x, Terraform ≥ 1.6, `jq`, `conftest` (optional), Docker.
 - A Cloud API key for `sa-crash-admin` in `CONFLUENT_CLOUD_API_KEY` / `CONFLUENT_CLOUD_API_SECRET`.
 - For step 4 (CC part): a Cloud API key with **MetricsViewer** (a cluster-scoped key gives an auth error).
+- Start clean, because modules 02 and 06 created the same topic on `dc-a`: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
 
 ```bash
 a() { docker exec -i dc-a "$@"; }                 # 00-lab-setup helper; internal bootstrap dc-a:29092
@@ -43,23 +46,23 @@ Doing it by hand shows how many steps a team would skip:
 
 ```bash
 confluent environment use $ENV_ID && confluent kafka cluster use $CLUSTER_ID
-confluent iam service-account create sa-orders-producer --description "lab06 producer" -o json | tee /tmp/sa-p.json
-confluent iam service-account create sa-analytics-consumer       --description "lab06 consumer" -o json | tee /tmp/sa-c.json
+confluent iam service-account create sa-billing-producer --description "lab07 producer" -o json | tee /tmp/sa-p.json
+confluent iam service-account create sa-analytics-consumer       --description "lab07 consumer" -o json | tee /tmp/sa-c.json
 P=$(jq -r .id /tmp/sa-p.json); C=$(jq -r .id /tmp/sa-c.json)
 
-# 1 schema first ("no schema, no topic"), 2 topic, 3 tags/owner (lab 03 B4), 4 role bindings:
+# 1 schema first ("no schema, no topic"), 2 topic, 3 tags/owner (lab 04 B4), 4 role bindings:
 confluent iam rbac role-binding create --principal User:$P --role DeveloperWrite \
   --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID \
-  --resource Topic:orders.order-status.updated.v1
+  --resource Topic:billing.call-record.created.v1
 confluent iam rbac role-binding create --principal User:$C --role DeveloperRead \
   --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID \
-  --resource Topic:orders.order-status.updated.v1
+  --resource Topic:billing.call-record.created.v1
 confluent iam rbac role-binding create --principal User:$C --role DeveloperRead \
   --environment $ENV_ID --cloud-cluster $CLUSTER_ID --kafka-cluster $CLUSTER_ID \
   --resource Group:analytics- --prefix
 confluent iam rbac role-binding create --principal User:$C --role DeveloperRead \
   --environment $ENV_ID --schema-registry-cluster $SR_ID \
-  --resource Subject:orders.order-status.updated.v1-value
+  --resource Subject:billing.call-record.created.v1-value
 ```
 
 Expected: each command prints the binding. Count the steps: about 12 per data product, each one a
@@ -68,7 +71,7 @@ step 1b, or let Terraform import them.
 
 ## 1b. The module
 
-Layout (create under `06-production-systems/terraform/`):
+Layout (create under `07-production-systems/terraform/`):
 
 ```
 terraform/
@@ -334,10 +337,10 @@ data "confluent_schema_registry_cluster" "this" {
   environment { id = local.env_id }
 }
 
-resource "confluent_service_account" "producer" { display_name = "sa-orders-producer" }
+resource "confluent_service_account" "producer" { display_name = "sa-billing-producer" }
 resource "confluent_service_account" "consumer" { display_name = "sa-analytics-consumer" }
 
-# Tag definitions are platform-owned; lab 03 creates PII/Public/Confidential/DataProduct.
+# Tag definitions are platform-owned; lab 04 creates PII/Public/Confidential/DataProduct.
 # Add Internal and Restricted here if they do not exist yet.
 resource "confluent_tag" "extra" {
   for_each = toset(["Internal", "Restricted"])
@@ -366,14 +369,14 @@ locals {
   }
 }
 
-module "location_assignment" {
+module "cell_config" {
   source                = "../../modules/data-product"
-  name                  = "orders.location-assignment.changed.v1"
-  schema_file           = "${path.module}/schemas/location-assignment-changed.avsc"
+  name                  = "network.cell-config.changed.v1"
+  schema_file           = "${path.module}/schemas/cell-config-changed.avsc"
   classification        = "C1"
-  owner                 = "Orders team"
-  owner_email           = "orders-platform@example.org"
-  description           = "Location/slot (re)assignment per order. Source: location planning."
+  owner                 = "Network team"
+  owner_email           = "cells-platform@example.org"
+  description           = "Configuration change per cell (frequency band). Source: network planning."
   partitions            = 6
   producer_principals   = [confluent_service_account.producer.id]
   consumer_principals   = [confluent_service_account.consumer.id]
@@ -382,14 +385,14 @@ module "location_assignment" {
   depends_on            = [confluent_tag.extra]
 }
 
-module "queue_forecast" {
+module "load_forecast" {
   source                = "../../modules/data-product"
-  name                  = "sites.queue-length.forecast.v1"
-  schema_file           = "${path.module}/schemas/queue-length-forecast.avsc"
+  name                  = "network.cell-load.forecast.v1"
+  schema_file           = "${path.module}/schemas/cell-load-forecast.avsc"
   classification        = "C2"
-  owner                 = "Sites team"
-  owner_email           = "sites-platform@example.org"
-  description           = "Forecast wait time per service queue, next 2 hours in 15-min slots. No PII."
+  owner                 = "Network team"
+  owner_email           = "cells-platform@example.org"
+  description           = "Forecast load per cell, next 2 hours in 15-min slots. No PII."
   producer_principals   = [confluent_service_account.producer.id]
   consumer_principals   = [confluent_service_account.consumer.id]
   consumer_group_prefix = "analytics-"
@@ -398,32 +401,32 @@ module "queue_forecast" {
 }
 ```
 
-`live/cc-basic/schemas/location-assignment-changed.avsc`:
+`live/cc-basic/schemas/cell-config-changed.avsc`:
 
 ```json
 {
-  "type": "record", "name": "LocationAssignmentChanged", "namespace": "com.example.orders",
-  "doc": "An order got a new location or slot.",
+  "type": "record", "name": "CellConfigChanged", "namespace": "com.example.network",
+  "doc": "A cell got a new configuration (frequency band).",
   "fields": [
-    {"name": "orderId", "type": "string", "doc": "Order id, e.g. SO-1001234"},
-    {"name": "location", "type": ["null", "string"], "default": null, "doc": "New location, e.g. ZONE-D7"},
-    {"name": "slot", "type": ["null", "string"], "default": null, "doc": "New slot inside the location"},
-    {"name": "previousLocation", "type": ["null", "string"], "default": null, "doc": "Location before the change"},
+    {"name": "cellId", "type": "string", "doc": "Cell id, e.g. CELL-0412"},
+    {"name": "band", "type": ["null", "string"], "default": null, "doc": "New frequency band, e.g. n78"},
+    {"name": "changeReason", "type": ["null", "string"], "default": null, "doc": "Why the configuration changed, e.g. CAPACITY"},
+    {"name": "previousBand", "type": ["null", "string"], "default": null, "doc": "Band before the change"},
     {"name": "changedAt", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "When the change was decided"}
   ]
 }
 ```
 
-`live/cc-basic/schemas/queue-length-forecast.avsc`:
+`live/cc-basic/schemas/cell-load-forecast.avsc`:
 
 ```json
 {
-  "type": "record", "name": "QueueLengthForecast", "namespace": "com.example.sites",
-  "doc": "Forecast queue per service queue. No personal data.",
+  "type": "record", "name": "CellLoadForecast", "namespace": "com.example.network",
+  "doc": "Forecast load per cell. No personal data.",
   "fields": [
-    {"name": "queueId", "type": "string", "doc": "e.g. SITE-2-Q1"},
+    {"name": "cellId", "type": "string", "doc": "e.g. CELL-0412"},
     {"name": "slotStart", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "Start of the 15-min slot"},
-    {"name": "expectedWaitSeconds", "type": "int", "doc": "Forecast wait"},
+    {"name": "expectedLoadPercent", "type": "int", "doc": "Forecast load, 0-100"},
     {"name": "modelVersion", "type": "string", "doc": "Forecast model version"}
   ]
 }
@@ -432,21 +435,21 @@ module "queue_forecast" {
 Run and try to break it:
 
 ```bash
-cd 06-production-systems/terraform/live/cc-basic
+cd 07-production-systems/terraform/live/cc-basic
 terraform init && terraform plan -out tf.plan && terraform apply tf.plan
 ```
 
 Expected: 2 topics, 2 schemas, 2 subject configs, 4 tag bindings, 2 entity-attribute resources,
 10 role bindings, 2 service accounts, 2 tags. Tag definitions `Public`, `Confidential`,
-`DataProduct` must exist (lab 03, or add them to `confluent_tag.extra`).
+`DataProduct` must exist (lab 04, or add them to `confluent_tag.extra`).
 
 Negative tests (each must fail at `plan`):
 
 | Change | Expected error |
 |---|---|
-| `name = "OrderStatus"` | naming validation |
+| `name = "CallRecord"` | naming validation |
 | `schema_file = "missing.avsc"` | "No schema, no topic" |
-| module with `schema_file = "${path.module}/../../../../03-stream-governance/schemas/customer-journey.avsc"` and `classification = "C1"` | PII precondition |
+| module with `schema_file = "${path.module}/../../../../04-stream-governance/schemas/subscriber-profile.avsc"` and `classification = "C1"` | PII precondition |
 | `partitions = 64` | partition limit |
 
 # 2. CI sketch — GitHub Actions
@@ -584,10 +587,10 @@ quota on the authenticated principal).
 
 ```bash
 a kafka-topics --bootstrap-server dc-a:29092 --create \
-  --topic tracking.item-scan.recorded.v1 --partitions 3 --replication-factor 1
+  --topic noc.cell-alarm.raised.v1 --partitions 3 --replication-factor 1
 
 # baseline: no quota
-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 200000 --record-size 1000 --throughput -1 \
   --producer-props bootstrap.servers=dc-a:29092 client.id=replay-job acks=all
 
@@ -599,7 +602,7 @@ a kafka-configs --bootstrap-server dc-a:29092 --describe \
   --entity-type clients --entity-name replay-job
 
 # again, with quota
-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 20000 --record-size 1000 --throughput -1 \
   --producer-props bootstrap.servers=dc-a:29092 client.id=replay-job acks=all \
   --print-metrics | grep -E 'records/sec|produce-throttle-time-avg'
@@ -647,15 +650,15 @@ resource "confluent_kafka_client_quota" "analytics_replay" {
 
 ```bash
 # produce 50k records, then consume only 5k with a group
-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 50000 --record-size 200 --throughput -1 \
   --producer-props bootstrap.servers=dc-a:29092
 a kafka-console-consumer --bootstrap-server dc-a:29092 \
-  --topic tracking.item-scan.recorded.v1 --group analytics-itemscan --from-beginning \
+  --topic noc.cell-alarm.raised.v1 --group analytics-alarms --from-beginning \
   --max-messages 5000 > /dev/null
 
 a kafka-consumer-groups --bootstrap-server dc-a:29092 \
-  --describe --group analytics-itemscan
+  --describe --group analytics-alarms
 ```
 
 Expected columns `TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG`; total lag ≈ 45k+ (plus
@@ -665,7 +668,7 @@ Datadog do) [V].
 
 ## 4b. Confluent Cloud, Metrics API
 
-Produce and consume a little on `cc-basic` (lab 03 B6), with consumer group `analytics-lab06`, then:
+Produce and consume a little on `cc-basic` (lab 04 B6), with consumer group `analytics-lab07`, then:
 
 ```bash
 curl -s -u "$METRICS_KEY:$METRICS_SECRET" -H 'Content-Type: application/json' \
@@ -684,7 +687,7 @@ minutes delay. For Prometheus/Datadog scraping use
 Cluster-link lag, when you have a link (module on hybrid): metric
 `io.confluent.kafka.server/cluster_link_mirror_topic_offset_lag` (preview) [V].
 
-CLI shortcut: `confluent kafka consumer group lag list analytics-lab06` [V].
+CLI shortcut: `confluent kafka consumer group lag list analytics-lab07` [V].
 
 # 5. Same data product on-prem — CFK CRs + ArgoCD (written only)
 
@@ -695,20 +698,20 @@ your CFK version (3.3 at time of writing).
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: orders-order-status-updated-v1-avsc
+  name: billing-call-record-created-v1-avsc
   namespace: confluent
 data:
   schema: |
-    { "type": "record", "name": "OrderStatusUpdated", "namespace": "com.example.orders", "fields": [ ... ] }
+    { "type": "record", "name": "CallRecordCreated", "namespace": "com.example.billing", "fields": [ ... ] }
 ---
 apiVersion: platform.confluent.io/v1beta1
 kind: Schema
 metadata:
-  name: orders.order-status.updated.v1-value    # subject name [V]
+  name: billing.call-record.created.v1-value    # subject name [V]
   namespace: confluent
 spec:
   data:
-    configRef: orders-order-status-updated-v1-avsc
+    configRef: billing-call-record-created-v1-avsc
     format: avro
   compatibilityLevel: BACKWARD_TRANSITIVE           # [V]
   schemaRegistryClusterRef:
@@ -717,10 +720,10 @@ spec:
 apiVersion: platform.confluent.io/v1beta1
 kind: KafkaTopic
 metadata:
-  name: orders.order-status.updated.v1
+  name: billing.call-record.created.v1
   namespace: confluent
   labels:
-    domain: orders
+    domain: billing
     classification: c1
     link-to-cloud: "true"            # read by the renderer of the ClusterLink topic filter
 spec:
@@ -736,15 +739,15 @@ spec:
 apiVersion: platform.confluent.io/v1beta1
 kind: ConfluentRolebinding
 metadata:
-  name: orders-producer-write
+  name: billing-producer-write
   namespace: confluent
 spec:
   principal:
     type: user
-    name: sa-orders-producer
+    name: sa-billing-producer
   role: DeveloperWrite
   resourcePatterns:
-    - name: orders.order-status.updated.v1
+    - name: billing.call-record.created.v1
       patternType: LITERAL
       resourceType: Topic
   kafkaRestClassRef:
@@ -757,14 +760,14 @@ ArgoCD Application per domain:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: kafka-dataproducts-orders-prod
+  name: kafka-dataproducts-billing-prod
   namespace: openshift-gitops
 spec:
   project: kafka-platform
   source:
     repoURL: https://github.com/example/platform-config
     targetRevision: main
-    path: onprem/prod/orders
+    path: onprem/prod/billing
   destination:
     server: https://kubernetes.default.svc
     namespace: confluent
@@ -788,7 +791,7 @@ ArgoCD PostSync hook.
 |---|---|---|
 | Module refuses bad input | negative tests in step 1b | 4 plan-time errors |
 | Role bindings complete | `confluent iam rbac role-binding list --principal User:<sa-analytics-consumer> --environment $ENV_ID --cloud-cluster $CLUSTER_ID` | topic read + group prefix read (subject read listed under SR scope) |
-| Catalog | Data Portal → `sites` | owner, description, `Internal` + `DataProduct` tags |
+| Catalog | Data Portal → `network` | owner, description, `Internal` + `DataProduct` tags |
 | Quota | perf test with/without | ≈ 1 MB/s with quota, throttle time > 0 |
 | Lag | 4a + 4b | lag visible for `analytics-*` groups |
 | CI | open a PR that adds a required field without default | `schema-compat` job fails with the SR message |
@@ -796,14 +799,14 @@ ArgoCD PostSync hook.
 # Teardown
 
 ```bash
-cd 06-production-systems/terraform/live/cc-basic && terraform destroy
+cd 07-production-systems/terraform/live/cc-basic && terraform destroy
 # CLI-created items from step 1 (if any)
 confluent iam service-account delete $(jq -r .id /tmp/sa-p.json) --force
 confluent iam service-account delete $(jq -r .id /tmp/sa-c.json) --force
 # local
 a kafka-configs --bootstrap-server dc-a:29092 --alter \
   --delete-config producer_byte_rate,consumer_byte_rate --entity-type clients --entity-name replay-job
-a kafka-topics --bootstrap-server dc-a:29092 --delete --topic tracking.item-scan.recorded.v1
+a kafka-topics --bootstrap-server dc-a:29092 --delete --topic noc.cell-alarm.raised.v1
 ```
 
 `terraform destroy` deletes the topics: the Rego delete rule protects only the PR pipeline, not

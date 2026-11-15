@@ -1,7 +1,9 @@
 ---
-title: 02 — Lab — public endpoint with IP filtering, then Azure Private Link from a VNet
+title: 03 — Lab — public endpoint with IP filtering, then Azure Private Link from a VNet
 subtitle: Part A on cc-basic (free), Part B on local, Part C in the paid-session (Enterprise + ingress PrivateLink Gateway), Part D written only (ExpressRoute + on-prem DNS)
 ---
+
+> **Video:** episode 3, "Kafka doesn't fit through a load balancer" (coming soon). The video gives the reasoning; this lab lets you see it happen.
 
 ## Goal
 
@@ -72,13 +74,13 @@ Expected: a wildcard SAN for the cluster domain. That wildcard is how all broker
 ### A2. Produce and consume on the public endpoint
 
 ```bash
-confluent api-key create --resource $CC_BASIC --description "lab02 public" -o json > /tmp/lab02-key.json
-confluent api-key use $(jq -r .api_key /tmp/lab02-key.json) --resource $CC_BASIC
+confluent api-key create --resource $CC_BASIC --description "lab03 public" -o json > /tmp/lab03-key.json
+confluent api-key use $(jq -r .api_key /tmp/lab03-key.json) --resource $CC_BASIC
 
-confluent kafka topic create orders.order-status.updated.v1 --partitions 3
-printf 'SO-1001001:{"orderId":"SO-1001001","status":"READY"}\nSO-1001002:{"orderId":"SO-1001002","status":"DELAYED"}\n' | \
-  confluent kafka topic produce orders.order-status.updated.v1 --parse-key --delimiter ":"
-confluent kafka topic consume orders.order-status.updated.v1 -b --print-key
+confluent kafka topic create billing.call-record.created.v1 --partitions 3
+printf 'SUB-1001001:{"recordId":"CDR-1001001","recordType":"VOICE"}\nSUB-1001002:{"recordId":"CDR-1001002","recordType":"DATA"}\n' | \
+  confluent kafka topic produce billing.call-record.created.v1 --parse-key --delimiter ":"
+confluent kafka topic consume billing.call-record.created.v1 -b --print-key
 ```
 
 Expected: the two records printed with their keys. Stop the consumer with Ctrl-C. (Wait a minute after creating the API key; new keys take a short time to propagate.)
@@ -91,7 +93,7 @@ cat > /tmp/cc-basic.properties <<EOF
 bootstrap.servers=$BOOT:9092
 security.protocol=SASL_SSL
 sasl.mechanism=PLAIN
-sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key /tmp/lab02-key.json)' password='$(jq -r .api_secret /tmp/lab02-key.json)';
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key /tmp/lab03-key.json)' password='$(jq -r .api_secret /tmp/lab03-key.json)';
 EOF
 kafka-broker-api-versions --bootstrap-server $BOOT:9092 --command-config /tmp/cc-basic.properties | grep -E '^[a-z0-9-]+\.' | cut -d' ' -f1
 ```
@@ -103,9 +105,9 @@ Expected: several host names like `b0-pkc-xxxxx.westeurope.azure.confluent.cloud
 Create an IP group for your own IP and a management filter (the first filter must include your IP; the CLI refuses a change that would lock you out):
 
 ```bash
-confluent iam ip-group create lab02-my-ip --cidr-blocks ${MY_IP}/32 -o json | tee /tmp/ipg.json
+confluent iam ip-group create lab03-my-ip --cidr-blocks ${MY_IP}/32 -o json | tee /tmp/ipg.json
 IPG=$(jq -r .id /tmp/ipg.json)
-confluent iam ip-filter create lab02-mgmt --resource-group multiple \
+confluent iam ip-filter create lab03-mgmt --resource-group multiple \
   --operations MANAGEMENT,SCHEMA --ip-groups $IPG --environment $CC_ENV
 confluent iam ip-filter list
 ```
@@ -115,10 +117,10 @@ Expected: the filter is listed. `confluent kafka topic list` still works from yo
 Now block Kafka data from all public networks for this environment. The CLI help lists only `MANAGEMENT`, `SCHEMA`, `FLINK` for `--operations` **[V]**; the Terraform provider and the docs list `KAFKA_DATA`. Try the CLI first; if it rejects `KAFKA_DATA`, use the Terraform block at the end of this part.
 
 ```bash
-confluent iam ip-filter create lab02-block-data --resource-group multiple \
+confluent iam ip-filter create lab03-block-data --resource-group multiple \
   --operations KAFKA_DATA,KAFKA_DISCOVERY --no-public-networks --environment $CC_ENV
 sleep 120
-confluent kafka topic consume orders.order-status.updated.v1 -b
+confluent kafka topic consume billing.call-record.created.v1 -b
 ```
 
 Expected if `KAFKA_DATA` filtering applies to Basic clusters: the consume fails with an authorization or connection error. If it still works, record that as a finding: `KAFKA_DATA` filtering does not apply to this cluster type or region **[V]**. Either way, management calls (`confluent kafka topic list`) keep working because the management filter allows your IP.
@@ -127,7 +129,7 @@ Remove the blocking filter:
 
 ```bash
 confluent iam ip-filter list
-confluent iam ip-filter delete <id-of-lab02-block-data>
+confluent iam ip-filter delete <id-of-lab03-block-data>
 ```
 
 Terraform version of the same filters (put in a scratch folder, `terraform apply`, then `terraform destroy`):
@@ -144,12 +146,12 @@ variable "my_ip"  { type = string }
 variable "env_id" { type = string }
 
 resource "confluent_ip_group" "my_ip" {
-  group_name  = "lab02-my-ip"
+  group_name  = "lab03-my-ip"
   cidr_blocks = ["${var.my_ip}/32"]
 }
 
 resource "confluent_ip_filter" "mgmt" {
-  filter_name      = "lab02-mgmt"
+  filter_name      = "lab03-mgmt"
   resource_group   = "multiple"
   operation_groups = ["MANAGEMENT", "SCHEMA"]
   ip_groups        = [confluent_ip_group.my_ip.id]
@@ -161,7 +163,7 @@ data "confluent_environment" "lab" {
 }
 
 resource "confluent_ip_filter" "block_data" {
-  filter_name      = "lab02-block-data"
+  filter_name      = "lab03-block-data"
   resource_group   = "multiple"
   operation_groups = ["KAFKA_DATA", "KAFKA_DISCOVERY"]
   ip_groups        = ["ipg-none"]   # predefined "No Public Networks" group
@@ -172,7 +174,7 @@ resource "confluent_ip_filter" "block_data" {
 Clean up Part A IP filters and group before you leave:
 
 ```bash
-confluent iam ip-filter list    # delete lab02-* filters
+confluent iam ip-filter list    # delete lab03-* filters
 confluent iam ip-group delete $IPG
 ```
 
@@ -209,15 +211,15 @@ Plan the session: about 20 min build, 60–90 min tests, 10 min teardown. Do the
 **1. Azure network and VM**
 
 ```bash
-RG=rg-crash-lab02
+RG=rg-crash-lab03
 az group create -n $RG -l $AZ_REGION
-az network vnet create -g $RG -n vnet-lab02 --address-prefixes 10.42.0.0/16 \
+az network vnet create -g $RG -n vnet-lab03 --address-prefixes 10.42.0.0/16 \
   --subnet-name snet-pe --subnet-prefixes 10.42.1.0/24
-az network vnet subnet create -g $RG --vnet-name vnet-lab02 -n snet-vm --address-prefixes 10.42.2.0/24
-az vm create -g $RG -n vm-lab02 --image Ubuntu2404 --size Standard_B2s \
-  --vnet-name vnet-lab02 --subnet snet-vm --admin-username azureuser --generate-ssh-keys \
+az network vnet subnet create -g $RG --vnet-name vnet-lab03 -n snet-vm --address-prefixes 10.42.2.0/24
+az vm create -g $RG -n vm-lab03 --image Ubuntu2404 --size Standard_B2s \
+  --vnet-name vnet-lab03 --subnet snet-vm --admin-username azureuser --generate-ssh-keys \
   --public-ip-sku Standard --nsg-rule NONE
-az network nsg rule create -g $RG --nsg-name vm-lab02NSG -n ssh-from-me --priority 100 \
+az network nsg rule create -g $RG --nsg-name vm-lab03NSG -n ssh-from-me --priority 100 \
   --source-address-prefixes ${MY_IP}/32 --destination-port-ranges 22 --access Allow --protocol Tcp
 ```
 
@@ -227,7 +229,7 @@ Expected: VM with a public IP for SSH from your IP only. (Azure Bastion is the p
 
 ```bash
 confluent environment use $CC_ENV
-confluent network gateway create lab02-ingress --cloud azure --region $AZ_REGION --type ingress-privatelink -o json | tee /tmp/gw.json
+confluent network gateway create lab03-ingress --cloud azure --region $AZ_REGION --type ingress-privatelink -o json | tee /tmp/gw.json
 GW=$(jq -r .id /tmp/gw.json)
 confluent network gateway describe $GW -o json | jq .
 ```
@@ -235,7 +237,7 @@ confluent network gateway describe $GW -o json | jq .
 Expected: gateway id `gw-…`, state `CREATED`, and a Private Link Service **alias** and **resource id** (field names vary by CLI version **[V]**; look for `private_link_service_alias` / `..._resource_id`).
 
 ```bash
-confluent kafka cluster create cc-ent-lab02 --cloud azure --region $AZ_REGION --type enterprise --availability high -o json | tee /tmp/ent.json
+confluent kafka cluster create cc-ent-lab03 --cloud azure --region $AZ_REGION --type enterprise --availability high -o json | tee /tmp/ent.json
 ENT=$(jq -r .id /tmp/ent.json)
 ```
 
@@ -245,9 +247,9 @@ Expected: an `lkc-…` id within a few minutes. Its endpoint is not reachable fr
 
 ```bash
 PLS_ID=$(confluent network gateway describe $GW -o json | jq -r '.. | .private_link_service_resource_id? // empty' | head -1)
-az network private-endpoint create -g $RG -n pe-confluent --vnet-name vnet-lab02 --subnet snet-pe \
-  --private-connection-resource-id "$PLS_ID" --connection-name cc-lab02 \
-  --manual-request true --request-message "crash-course lab02"
+az network private-endpoint create -g $RG -n pe-confluent --vnet-name vnet-lab03 --subnet snet-pe \
+  --private-connection-resource-id "$PLS_ID" --connection-name cc-lab03 \
+  --manual-request true --request-message "crash-course lab03"
 PE_ID=$(az network private-endpoint show -g $RG -n pe-confluent --query id -o tsv)
 PE_IP=$(az network private-endpoint show -g $RG -n pe-confluent --query 'customDnsConfigs[0].ipAddresses[0]' -o tsv)
 # if PE_IP is empty, read it from the NIC:
@@ -260,7 +262,7 @@ Expected: endpoint created with connection state **Pending** (manual request, cr
 **4. Register the endpoint as an access point**
 
 ```bash
-confluent network access-point private-link ingress-endpoint create lab02-ap \
+confluent network access-point private-link ingress-endpoint create lab03-ap \
   --cloud azure --gateway $GW --endpoint-resource-id "$PE_ID" -o json | tee /tmp/ap.json
 AP=$(jq -r .id /tmp/ap.json)
 sleep 60
@@ -277,7 +279,7 @@ ZONE=$(confluent network access-point private-link ingress-endpoint describe $AP
 az network private-dns zone create -g $RG -n $ZONE
 az network private-dns record-set a add-record -g $RG -z $ZONE -n '*' -a $PE_IP
 az network private-dns record-set a update -g $RG -z $ZONE -n '*' --set ttl=60
-az network private-dns link vnet create -g $RG -z $ZONE -n link-lab02 -v vnet-lab02 -e false
+az network private-dns link vnet create -g $RG -z $ZONE -n link-lab03 -v vnet-lab03 -e false
 ```
 
 Expected: zone with one wildcard A record, linked to the VNet.
@@ -285,7 +287,7 @@ Expected: zone with one wildcard A record, linked to the VNet.
 **6. Credentials and endpoint for the client**
 
 ```bash
-confluent api-key create --resource $ENT --description "lab02 private" -o json > /tmp/lab02-ent-key.json
+confluent api-key create --resource $ENT --description "lab03 private" -o json > /tmp/lab03-ent-key.json
 confluent kafka cluster describe $ENT -o json | jq '.endpoint, .endpoints'
 ```
 
@@ -302,8 +304,8 @@ nc -vz -w 5 $BOOT_PL 9092     # fails: no route
 **8. Test from the VM**
 
 ```bash
-VM_IP=$(az vm show -d -g $RG -n vm-lab02 --query publicIps -o tsv)
-scp /tmp/lab02-ent-key.json azureuser@$VM_IP:
+VM_IP=$(az vm show -d -g $RG -n vm-lab03 --query publicIps -o tsv)
+scp /tmp/lab03-ent-key.json azureuser@$VM_IP:
 ssh azureuser@$VM_IP
 # on the VM:
 sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-21-jre-headless dnsutils jq netcat-openbsd
@@ -320,16 +322,16 @@ cat > cc-ent.properties <<EOF
 bootstrap.servers=$BOOT_PL:9092
 security.protocol=SASL_SSL
 sasl.mechanism=PLAIN
-sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key lab02-ent-key.json)' password='$(jq -r .api_secret lab02-ent-key.json)';
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username='$(jq -r .api_key lab03-ent-key.json)' password='$(jq -r .api_secret lab03-ent-key.json)';
 EOF
 kafka-topics.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties \
-  --create --topic tracking.item-scan.recorded.v1 --partitions 3
+  --create --topic noc.cell-alarm.raised.v1 --partitions 3
 kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -E '^[^ ]+:9092' | cut -d' ' -f1
 for b in $(kafka-broker-api-versions.sh --bootstrap-server $BOOT_PL:9092 --command-config cc-ent.properties | grep -oE '^[^ ]+:9092' | cut -d: -f1 | head -3); do dig +short $b | tail -1; done
-echo 'IT-123:{"itemTag":"IT-123","scan":"SORTER-3"}' | kafka-console-producer.sh --bootstrap-server $BOOT_PL:9092 \
-  --producer.config cc-ent.properties --topic tracking.item-scan.recorded.v1 --reader-property parse.key=true --reader-property key.separator=:
+echo 'ALM-123:{"alarmId":"ALM-123","cellId":"CELL-0412"}' | kafka-console-producer.sh --bootstrap-server $BOOT_PL:9092 \
+  --producer.config cc-ent.properties --topic noc.cell-alarm.raised.v1 --reader-property parse.key=true --reader-property key.separator=:
 kafka-console-consumer.sh --bootstrap-server $BOOT_PL:9092 --consumer.config cc-ent.properties \
-  --topic tracking.item-scan.recorded.v1 --from-beginning --max-messages 1
+  --topic noc.cell-alarm.raised.v1 --from-beginning --max-messages 1
 ```
 
 Expected:
@@ -349,7 +351,7 @@ Also try the Confluent CLI from the VM (`confluent login`, `confluent kafka topi
 
 ### C2. Terraform path (same end state)
 
-Folder: a scratch folder, for example `~/crash-course/lab02-pl/`. Credentials: `CONFLUENT_CLOUD_API_KEY/SECRET` for `sa-crash-admin`, `ARM_SUBSCRIPTION_ID` + `az login`.
+Folder: a scratch folder, for example `~/crash-course/lab03-pl/`. Credentials: `CONFLUENT_CLOUD_API_KEY/SECRET` for `sa-crash-admin`, `ARM_SUBSCRIPTION_ID` + `az login`.
 
 ```hcl
 terraform {
@@ -372,12 +374,12 @@ variable "ssh_pub" { default = "~/.ssh/id_rsa.pub" }
 
 # ---------- Azure ----------
 resource "azurerm_resource_group" "rg" {
-  name     = "rg-crash-lab02"
+  name     = "rg-crash-lab03"
   location = var.region
 }
 
 resource "azurerm_virtual_network" "vnet" {
-  name                = "vnet-lab02"
+  name                = "vnet-lab03"
   location            = var.region
   resource_group_name = azurerm_resource_group.rg.name
   address_space       = ["10.42.0.0/16"]
@@ -398,7 +400,7 @@ resource "azurerm_subnet" "vm" {
 }
 
 resource "azurerm_network_security_group" "vm" {
-  name                = "nsg-vm-lab02"
+  name                = "nsg-vm-lab03"
   location            = var.region
   resource_group_name = azurerm_resource_group.rg.name
   security_rule {
@@ -420,7 +422,7 @@ resource "azurerm_subnet_network_security_group_association" "vm" {
 }
 
 resource "azurerm_public_ip" "vm" {
-  name                = "pip-vm-lab02"
+  name                = "pip-vm-lab03"
   location            = var.region
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Static"
@@ -428,7 +430,7 @@ resource "azurerm_public_ip" "vm" {
 }
 
 resource "azurerm_network_interface" "vm" {
-  name                = "nic-vm-lab02"
+  name                = "nic-vm-lab03"
   location            = var.region
   resource_group_name = azurerm_resource_group.rg.name
   ip_configuration {
@@ -440,7 +442,7 @@ resource "azurerm_network_interface" "vm" {
 }
 
 resource "azurerm_linux_virtual_machine" "vm" {
-  name                  = "vm-lab02"
+  name                  = "vm-lab03"
   location              = var.region
   resource_group_name   = azurerm_resource_group.rg.name
   size                  = "Standard_B2s"
@@ -471,7 +473,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
 
 # ---------- Confluent: gateway ----------
 resource "confluent_gateway" "ingress" {
-  display_name = "lab02-ingress"
+  display_name = "lab03-ingress"
   environment { id = var.env_id }
   azure_ingress_private_link_gateway { region = var.region }
 }
@@ -483,16 +485,16 @@ resource "azurerm_private_endpoint" "cc" {
   resource_group_name = azurerm_resource_group.rg.name
   subnet_id           = azurerm_subnet.pe.id
   private_service_connection {
-    name                              = "cc-lab02"
+    name                              = "cc-lab03"
     private_connection_resource_alias = confluent_gateway.ingress.azure_ingress_private_link_gateway[0].private_link_service_alias
     is_manual_connection              = true          # cross-tenant: Confluent approves when the access point is registered
-    request_message                   = "crash-course lab02"
+    request_message                   = "crash-course lab03"
   }
 }
 
 # ---------- Confluent: access point = register that endpoint ----------
 resource "confluent_access_point" "ap" {
-  display_name = "lab02-ap"
+  display_name = "lab03-ap"
   environment { id = var.env_id }
   gateway     { id = confluent_gateway.ingress.id }
   azure_ingress_private_link_endpoint {
@@ -502,7 +504,7 @@ resource "confluent_access_point" "ap" {
 
 # ---------- Confluent: Enterprise cluster ----------
 resource "confluent_kafka_cluster" "ent" {
-  display_name = "cc-ent-lab02"
+  display_name = "cc-ent-lab03"
   availability = "HIGH"
   cloud        = "AZURE"
   region       = var.region
@@ -524,30 +526,30 @@ resource "azurerm_private_dns_a_record" "wildcard" {
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "cc" {
-  name                  = "link-lab02"
+  name                  = "link-lab03"
   private_dns_zone_id   = azurerm_private_dns_zone.cc.id    # azurerm 5.x
   virtual_network_id    = azurerm_virtual_network.vnet.id
   registration_enabled  = false
 }
 
 # ---------- Confluent: client identity ----------
-resource "confluent_service_account" "lab02" {
-  display_name = "sa-lab02-client"
-  description  = "lab02 private link client"
+resource "confluent_service_account" "lab03" {
+  display_name = "sa-lab03-client"
+  description  = "lab03 private link client"
 }
 
-resource "confluent_role_binding" "lab02_admin" {
-  principal   = "User:${confluent_service_account.lab02.id}"
+resource "confluent_role_binding" "lab03_admin" {
+  principal   = "User:${confluent_service_account.lab03.id}"
   role_name   = "CloudClusterAdmin"
   crn_pattern = confluent_kafka_cluster.ent.rbac_crn
 }
 
-resource "confluent_api_key" "lab02" {
-  display_name = "lab02-ent-key"
+resource "confluent_api_key" "lab03" {
+  display_name = "lab03-ent-key"
   owner {
-    id          = confluent_service_account.lab02.id
-    api_version = confluent_service_account.lab02.api_version
-    kind        = confluent_service_account.lab02.kind
+    id          = confluent_service_account.lab03.id
+    api_version = confluent_service_account.lab03.api_version
+    kind        = confluent_service_account.lab03.kind
   }
   managed_resource {
     id          = confluent_kafka_cluster.ent.id
@@ -555,7 +557,7 @@ resource "confluent_api_key" "lab02" {
     kind        = confluent_kafka_cluster.ent.kind
     environment { id = var.env_id }
   }
-  depends_on = [confluent_role_binding.lab02_admin, confluent_access_point.ap]
+  depends_on = [confluent_role_binding.lab03_admin, confluent_access_point.ap]
 }
 
 output "vm_public_ip"   { value = azurerm_public_ip.vm.ip_address }
@@ -565,9 +567,9 @@ output "bootstrap" {
   # With gateways a cluster lists one endpoint per access point; pick ours.
   value = [for e in confluent_kafka_cluster.ent.endpoints : e.bootstrap_endpoint if e.access_point_id == confluent_access_point.ap.id]
 }
-output "api_key"        { value = confluent_api_key.lab02.id }
+output "api_key"        { value = confluent_api_key.lab03.id }
 output "api_secret" {
-  value     = confluent_api_key.lab02.secret
+  value     = confluent_api_key.lab03.secret
   sensitive = true
 }
 ```
@@ -590,14 +592,14 @@ Notes:
 CLI path:
 
 ```bash
-confluent api-key delete $(jq -r .api_key /tmp/lab02-ent-key.json) --force
+confluent api-key delete $(jq -r .api_key /tmp/lab03-ent-key.json) --force
 confluent kafka cluster delete $ENT --force
 confluent network access-point private-link ingress-endpoint delete $AP --force
 confluent network gateway delete $GW --force
-az group delete -n rg-crash-lab02 --yes --no-wait
+az group delete -n rg-crash-lab03 --yes --no-wait
 ```
 
-Terraform path: `terraform destroy`. Then check in the Console (Network management, Clusters) and in `az group list -o table` that nothing from lab02 is left. Billing: check the Confluent usage page the next day.
+Terraform path: `terraform destroy`. Then check in the Console (Network management, Clusters) and in `az group list -o table` that nothing from lab03 is left. Billing: check the Confluent usage page the next day.
 
 ### Cost note
 

@@ -52,9 +52,9 @@ lab_check() {
     fi
   done
   if [ "$(docker inspect -f '{{.State.Running}}' connect 2>/dev/null)" = true ]; then
-    echo "ok    connect running (only needed for module 01 part C)"
+    echo "ok    connect running (only needed for module 02 part C)"
   else
-    echo "info  connect not running (only needed for module 01 part C: docker compose --profile mm2 up -d)"
+    echo "info  connect not running (only needed for module 02 part C: docker compose --profile mm2 up -d)"
   fi
   [ $ok = 1 ] && echo "All good." || return 1
 }

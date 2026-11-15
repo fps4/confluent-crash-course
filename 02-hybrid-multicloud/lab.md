@@ -1,7 +1,9 @@
 ---
-title: "01 — Lab: Cluster Linking DR between two DCs, failback, and MirrorMaker 2 for comparison"
+title: "02 — Lab: Cluster Linking DR between two DCs, failback, and MirrorMaker 2 for comparison"
 subtitle: Environment local (Docker); Terraform part needs paid-session. Written 2026-11-07, untested.
 ---
+
+> **Video:** episode 2, "Copies, failover and the way back" (coming soon). The video gives the reasoning; this lab lets you see it happen.
 
 # Goal
 
@@ -18,7 +20,7 @@ See with your own eyes what the notes claim:
 |---|---|
 | Environment | `local` for parts A–C; `paid-session` (`cc-paid`) only for part D2 |
 | Time | ~90 min for A–C, 30 min for D |
-| Topics | `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` |
+| Topics | `billing.call-record.created.v1`, `noc.cell-alarm.raised.v1`, `network.cell-load.measured.v1` |
 
 # Before you start
 
@@ -29,8 +31,9 @@ Confluent Cloud until part D2. Do these steps in the terminal you will use for t
 # 1. Load the helpers (a, b, LAB, DCA_ID, DCB_ID). Needed in every new terminal.
 source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh   # adjust to where you cloned
 
-# 2. Start the stack, including the Connect worker for part C (no-op if already running)
-cd "$LAB" && docker compose --profile mm2 up -d
+# 2. Start clean, because module 01 created the same topics (deletes all topics and links).
+#    Includes the Connect worker for part C.
+cd "$LAB" && docker compose --profile mm2 down -v && docker compose --profile mm2 up -d
 
 # 3. Check: four containers running, $LAB/work shared as /work, REST on 8090/8091
 lab_check
@@ -52,8 +55,7 @@ How the commands in this lab work:
   records arrive. That is normal.
 - The parts build on each other's cleanup: do A → B → C in order. D is reading (D1) and optional
   paid work (D2).
-- Start over at any point: `cd "$LAB" && docker compose --profile mm2 down -v && docker compose
-  --profile mm2 up -d` (deletes all topics and links).
+- Start over at any point: repeat step 2 (deletes all topics and links).
 
 ---
 
@@ -62,24 +64,24 @@ How the commands in this lab work:
 ## A1. Source topic, data, one consumer group
 
 ```bash
-T=orders.order-status.updated.v1
+T=billing.call-record.created.v1
 a kafka-topics --bootstrap-server dc-a:29092 --create --topic $T --partitions 3 --replication-factor 1
 
-# 60 keyed records (key = order ID, so one order stays in one partition)
-for i in $(seq 1 60); do o="SO-$((1001600 + i % 7))"; echo "$o|{\"orderId\":\"$o\",\"status\":\"READY\",\"seq\":$i}"; done \
+# 60 keyed records (key = subscriber reference, so one subscriber stays in one partition)
+for i in $(seq 1 60); do o="SUB-$((1001600 + i % 7))"; echo "$o|{\"recordId\":\"CDR-$((1001600 + i))\",\"recordType\":\"VOICE\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T \
      --reader-property parse.key=true --reader-property key.separator='|'
 
-# group ops-dashboard reads everything and commits 60
-a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group ops-dashboard \
+# group billing-rater reads everything and commits 60
+a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group billing-rater \
   --from-beginning --timeout-ms 10000 > /dev/null
 
 # 40 more records the group has NOT read yet
-for i in $(seq 61 100); do o="SO-$((1001600 + i % 7))"; echo "$o|{\"orderId\":\"$o\",\"status\":\"DISPATCHED\",\"seq\":$i}"; done \
+for i in $(seq 61 100); do o="SUB-$((1001600 + i % 7))"; echo "$o|{\"recordId\":\"CDR-$((1001600 + i))\",\"recordType\":\"SMS\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T \
      --reader-property parse.key=true --reader-property key.separator='|'
 
-a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group ops-dashboard
+a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group billing-rater
 ```
 
 Expected: three partitions; CURRENT-OFFSET sums to 60, LOG-END-OFFSET sums to 100, LAG sums to 40.
@@ -93,7 +95,7 @@ consumer.offset.sync.enable=true
 consumer.offset.sync.ms=5000
 EOF
 cat > $LAB/work/dr-link-groups.json <<'EOF'
-{"groupFilters":[{"name":"ops-dashboard","patternType":"LITERAL","filterType":"INCLUDE"}]}
+{"groupFilters":[{"name":"billing-rater","patternType":"LITERAL","filterType":"INCLUDE"}]}
 EOF
 
 b kafka-cluster-links --bootstrap-server dc-b:29092 --create --link dr-link \
@@ -137,7 +139,7 @@ key and value on both clusters. (With MM2 in part C this is *not* guaranteed.)
 Wait ~10 s (2 × sync interval), then:
 
 ```bash
-b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group ops-dashboard
+b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group billing-rater
 ```
 
 Expected: same CURRENT-OFFSET per partition as on dc-a (sum 60), no active members.
@@ -145,15 +147,15 @@ Expected: same CURRENT-OFFSET per partition as on dc-a (sum 60), no active membe
 ## A4. The mirror is read-only
 
 ```bash
-echo 'SO-1001601|{"seq":999}' | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T \
+echo 'SUB-1001601|{"seq":999}' | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T \
   --reader-property parse.key=true --reader-property key.separator='|'
 ```
 
 Expected: the produce fails. On CP 8.4.0:
 
 ```
-ERROR Error when sending message to topic orders.order-status.updated.v1 with key: 10 bytes, value: 11 bytes ...
-org.apache.kafka.common.errors.InvalidRequestException: Cannot append records to read-only mirror topic 'orders.order-status.updated.v1'
+ERROR Error when sending message to topic billing.call-record.created.v1 with key: 11 bytes, value: 11 bytes ...
+org.apache.kafka.common.errors.InvalidRequestException: Cannot append records to read-only mirror topic 'billing.call-record.created.v1'
 ```
 
 This is the point of the step: a mirror topic only accepts records from the link. It becomes
@@ -173,7 +175,7 @@ b kafka-mirrors --describe --links dr-link --bootstrap-server dc-b:29092   # Sta
 Now dc-b is primary for this topic. The group continues:
 
 ```bash
-b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group ops-dashboard \
+b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group billing-rater \
   --timeout-ms 10000 --formatter-property print.offset=true | wc -l
 ```
 
@@ -183,7 +185,7 @@ a few more (re-read). Promote would have refused here, because promote needs the
 Produce works now:
 
 ```bash
-echo 'SO-1001601|{"orderId":"SO-1001601","status":"DELAYED","seq":101}' | b kafka-console-producer \
+echo 'SUB-1001601|{"recordId":"CDR-1001701","recordType":"DATA","seq":101}' | b kafka-console-producer \
   --bootstrap-server dc-b:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 ```
 
@@ -210,7 +212,7 @@ leader election off (default). Both link halves use the **same name**.
 ## B1. Topic, link on both sides, mirror on dc-b
 
 ```bash
-T=tracking.item-scan.recorded.v1
+T=noc.cell-alarm.raised.v1
 a kafka-topics --bootstrap-server dc-a:29092 --create --topic $T --partitions 3 --replication-factor 1
 
 cat > $LAB/work/bidi-on-b.properties <<'EOF'
@@ -220,7 +222,7 @@ consumer.offset.sync.enable=true
 consumer.offset.sync.ms=5000
 EOF
 cat > $LAB/work/bidi-groups.json <<'EOF'
-{"groupFilters":[{"name":"item-sorter","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
+{"groupFilters":[{"name":"alarm-router","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
 EOF
 cat > $LAB/work/bidi-on-a.properties <<'EOF'
 link.mode=BIDIRECTIONAL
@@ -239,11 +241,11 @@ mirrored *on dc-b*, nothing flows back.
 ## B2. Normal operation
 
 ```bash
-for i in $(seq 1 50); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"scanner\":\"S12\",\"seq\":$i}"; done \
+for i in $(seq 1 50); do alarm="ALM-$((100000 + i))"; echo "$alarm|{\"alarmId\":\"$alarm\",\"cellId\":\"CELL-0412\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
-a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group item-sorter --from-beginning --timeout-ms 10000 > /dev/null
+a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group alarm-router --from-beginning --timeout-ms 10000 > /dev/null
 sleep 10
-b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group item-sorter   # sum 50
+b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group alarm-router   # sum 50
 ```
 
 ## B3. Create divergence, then lose dc-a
@@ -253,16 +255,16 @@ of the outage):
 
 ```bash
 b kafka-mirrors --pause --topics $T --bootstrap-server dc-b:29092
-for i in $(seq 51 55); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"note\":\"DIVERGENT\",\"seq\":$i}"; done \
+for i in $(seq 51 55); do alarm="ALM-$((100000 + i))"; echo "$alarm|{\"alarmId\":\"$alarm\",\"note\":\"DIVERGENT\",\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
 a kafka-get-offsets --bootstrap-server dc-a:29092 --topic $T     # sum 55
 b kafka-get-offsets --bootstrap-server dc-b:29092 --topic $T     # sum 50
 
 docker stop dc-a
 b kafka-mirrors --failover --topics $T --bootstrap-server dc-b:29092
-for i in $(seq 101 110); do item="IT-$((100000 + i))"; echo "$item|{\"itemTag\":\"$item\",\"note\":\"WRITTEN-IN-DR\",\"seq\":$i}"; done \
+for i in $(seq 101 110); do alarm="ALM-$((100000 + i))"; echo "$alarm|{\"alarmId\":\"$alarm\",\"note\":\"WRITTEN-IN-DR\",\"seq\":$i}"; done \
  | b kafka-console-producer --bootstrap-server dc-b:29092 --topic $T --reader-property parse.key=true --reader-property key.separator='|'
-b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group item-sorter --timeout-ms 10000 | wc -l   # 10
+b kafka-console-consumer --bootstrap-server dc-b:29092 --topic $T --group alarm-router --timeout-ms 10000 | wc -l   # 10
 ```
 
 State now: dc-b has 60 records (1–50 + 101–110) and is primary. dc-a (down) has 55 (1–55); 51–55
@@ -311,7 +313,7 @@ consumers off dc-b (ours have exited), then reverse:
 cat > $LAB/work/bidi-on-a-offsets.properties <<'EOF'
 consumer.offset.sync.enable=true
 consumer.offset.sync.ms=5000
-consumer.offset.group.filters={"groupFilters":[{"name":"item-sorter","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
+consumer.offset.group.filters={"groupFilters":[{"name":"alarm-router","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}
 EOF
 a kafka-configs --bootstrap-server dc-a:29092 --alter --cluster-link bidi-link --add-config-file /work/bidi-on-a-offsets.properties
 sleep 10
@@ -325,10 +327,10 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 a kafka-mirrors --describe --links bidi-link --bootstrap-server dc-a:29092   # PENDING_SYNCHRONIZE -> STOPPED (writable source)
 b kafka-mirrors --describe --links bidi-link --bootstrap-server dc-b:29092   # PENDING_MIRROR -> ACTIVE (mirror again)
-a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group item-sorter   # sum 60, lag 0
+a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group alarm-router   # sum 60, lag 0
 ```
 
-Expected: produce to dc-a works, produce to dc-b fails (read-only), `item-sorter` on dc-a resumes
+Expected: produce to dc-a works, produce to dc-b fails (read-only), `alarm-router` on dc-a resumes
 at 60. If the topic sticks in `PENDING_STOPPED`, a consumer group was still active on the other
 side; the documented escape is `failover` on the stuck topic (some records re-read).
 
@@ -345,19 +347,19 @@ shows state-transition errors if a step hangs.
 ## C1. Source topic with a moved log start offset
 
 ```bash
-T=sites.queue-length.measured.v1
+T=network.cell-load.measured.v1
 a kafka-topics --bootstrap-server dc-a:29092 --create --topic $T --partitions 1 --replication-factor 1
-for i in $(seq 1 30); do echo "{\"site\":\"SITE-$((i % 4))\",\"queueMinutes\":$((i % 17)),\"seq\":$i}"; done \
+for i in $(seq 1 30); do echo "{\"cellId\":\"CELL-$((i % 4))\",\"loadPercent\":$((i % 17)),\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T
 
 # Simulate retention: delete the first 10 records (log start offset -> 10)
 echo "{\"partitions\":[{\"topic\":\"$T\",\"partition\":0,\"offset\":10}],\"version\":1}" > $LAB/work/delete-10.json
 a kafka-delete-records --bootstrap-server dc-a:29092 --offset-json-file /work/delete-10.json
 
-a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group sites-ui --from-beginning --timeout-ms 10000 > /dev/null
-for i in $(seq 31 50); do echo "{\"site\":\"SITE-$((i % 4))\",\"queueMinutes\":$((i % 17)),\"seq\":$i}"; done \
+a kafka-console-consumer --bootstrap-server dc-a:29092 --topic $T --group cells-ui --from-beginning --timeout-ms 10000 > /dev/null
+for i in $(seq 31 50); do echo "{\"cellId\":\"CELL-$((i % 4))\",\"loadPercent\":$((i % 17)),\"seq\":$i}"; done \
  | a kafka-console-producer --bootstrap-server dc-a:29092 --topic $T
-a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group sites-ui   # CURRENT-OFFSET 30, LOG-END 50
+a kafka-consumer-groups --bootstrap-server dc-a:29092 --describe --group cells-ui   # CURRENT-OFFSET 30, LOG-END 50
 ```
 
 ## C2. Deploy the three MM2 connectors on the Connect worker (runs on dc-b)
@@ -373,12 +375,12 @@ common='"source.cluster.alias":"dc-a","target.cluster.alias":"dc-b",
 
 cat > $LAB/work/mm2-source.json <<EOF
 {"name":"mm2-source","config":{"connector.class":"org.apache.kafka.connect.mirror.MirrorSourceConnector",$common,
- "topics":"sites\\\\..*","replication.factor":"1","offset-syncs.topic.replication.factor":"1",
+ "topics":"network\\\\..*","replication.factor":"1","offset-syncs.topic.replication.factor":"1",
  "sync.topic.acls.enabled":"false","refresh.topics.interval.seconds":"10"}}
 EOF
 cat > $LAB/work/mm2-checkpoint.json <<EOF
 {"name":"mm2-checkpoint","config":{"connector.class":"org.apache.kafka.connect.mirror.MirrorCheckpointConnector",$common,
- "groups":"sites-.*","emit.checkpoints.interval.seconds":"5",
+ "groups":"cells-.*","emit.checkpoints.interval.seconds":"5",
  "sync.group.offsets.enabled":"true","sync.group.offsets.interval.seconds":"5",
  "checkpoints.topic.replication.factor":"1"}}
 EOF
@@ -395,25 +397,25 @@ curl -s 'localhost:8083/connectors?expand=status' | jq -r '.[] | "\(.status.name
 ```
 
 Expected: three connectors `RUNNING`. Check the JSON escaping of `topics` with
-`jq .config.topics $LAB/work/mm2-source.json` — it must read `sites\..*`.
+`jq .config.topics $LAB/work/mm2-source.json` — it must read `network\..*`.
 
 ## C3. Compare with Cluster Linking
 
 ```bash
-b kafka-topics --bootstrap-server dc-b:29092 --list | grep -E 'sites|checkpoints|heartbeats'
+b kafka-topics --bootstrap-server dc-b:29092 --list | grep -E 'network|checkpoints|heartbeats'
 a kafka-topics --bootstrap-server dc-a:29092 --list | grep offset-syncs
 a kafka-get-offsets --bootstrap-server dc-a:29092 --topic $T
 b kafka-get-offsets --bootstrap-server dc-b:29092 --topic dc-a.$T
 b kafka-console-consumer --bootstrap-server dc-b:29092 --topic dc-a.$T --partition 0 --offset 0 \
   --max-messages 1 --formatter-property print.offset=true
-b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group sites-ui
+b kafka-consumer-groups --bootstrap-server dc-b:29092 --describe --group cells-ui
 ```
 
 Expected:
 
 | Check | Cluster Linking (part A) | MM2 (here) |
 |---|---|---|
-| Target topic name | `orders.order-status.updated.v1` | **`dc-a.sites.queue-length.measured.v1`** |
+| Target topic name | `billing.call-record.created.v1` | **`dc-a.network.cell-load.measured.v1`** |
 | Internal topics | none | `mm2-offset-syncs.dc-b.internal` on dc-a; `dc-a.checkpoints.internal`, `heartbeats` on dc-b |
 | End offset | same as source | **40** on dc-b vs **50** on dc-a |
 | Record at offset 0 | n/a | `seq 11` (source offset 10) — offsets shifted |
@@ -422,7 +424,7 @@ Expected:
 ## C4. "Fail over" a consumer with MM2
 
 ```bash
-b kafka-console-consumer --bootstrap-server dc-b:29092 --topic dc-a.$T --group sites-ui --timeout-ms 10000 | wc -l
+b kafka-console-consumer --bootstrap-server dc-b:29092 --topic dc-a.$T --group cells-ui --timeout-ms 10000 | wc -l
 ```
 
 Expected: 20 if translation was exact, more if not (duplicates). Note the client had to change
@@ -467,9 +469,9 @@ spec:
   configs:
     consumer.offset.sync.enable: "true"
     consumer.offset.sync.ms: "30000"
-    consumer.offset.group.filters: '{"groupFilters":[{"name":"item-sorter","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}'
+    consumer.offset.group.filters: '{"groupFilters":[{"name":"alarm-router","patternType":"LITERAL","filterType":"INCLUDE","topicTypes":["LOCAL_MIRROR"]}]}'
   mirrorTopics:
-    - name: tracking.item-scan.recorded.v1
+    - name: noc.cell-alarm.raised.v1
       direction: toDestination
 ---
 # Lives in dc-a: the other half; no mirror topics in normal operation
@@ -496,12 +498,12 @@ CRs (ArgoCD `Prune=false`, review rules).
 
 ## D2. Terraform: the same DR pattern inside Confluent Cloud (paid-session)
 
-`cc-basic` → `cc-paid`, destination-initiated, offset sync for `ops-dashboard`, one mirror
+`cc-basic` → `cc-paid`, destination-initiated, offset sync for `billing-rater`, one mirror
 topic. Basic can be the *source* of a destination-initiated link; Dedicated is a valid destination.
 Note: Terraform does not support the failback APIs (reverse / truncate); failover and promote are
 possible by changing the mirror topic `status`.
 
-Save as `$LAB/work/tf-01/main.tf` (reads the base state from `00-lab-setup/terraform`):
+Save as `$LAB/work/tf-02/main.tf` (reads the base state from `00-lab-setup/terraform`):
 
 ```hcl
 terraform {
@@ -560,14 +562,14 @@ resource "confluent_cluster_link" "cc_dr" {
     "consumer.offset.sync.enable"   = "true"
     "consumer.offset.sync.ms"       = "30000"
     "consumer.offset.group.filters" = jsonencode({
-      groupFilters = [{ name = "ops-dashboard", patternType = "LITERAL", filterType = "INCLUDE" }]
+      groupFilters = [{ name = "billing-rater", patternType = "LITERAL", filterType = "INCLUDE" }]
     })
   }
 }
 
-resource "confluent_kafka_mirror_topic" "order_status" {
+resource "confluent_kafka_mirror_topic" "call_record" {
   source_kafka_topic {
-    topic_name = "orders.order-status.updated.v1"
+    topic_name = "billing.call-record.created.v1"
   }
   cluster_link {
     link_name = confluent_cluster_link.cc_dr.link_name
@@ -585,9 +587,9 @@ resource "confluent_kafka_mirror_topic" "order_status" {
 ```
 
 ```bash
-cd $LAB/work/tf-01 && terraform init && terraform apply
+cd $LAB/work/tf-02 && terraform init && terraform apply
 confluent kafka mirror list --cluster $(terraform -chdir=$LAB/terraform output -raw dedicated_cluster_id)
-confluent kafka mirror describe orders.order-status.updated.v1 --link cc-dr-link \
+confluent kafka mirror describe billing.call-record.created.v1 --link cc-dr-link \
   --cluster $(terraform -chdir=$LAB/terraform output -raw dedicated_cluster_id)
 ```
 
@@ -598,8 +600,8 @@ confluent kafka link create cc-dr-link --cluster <cc-paid-id> \
   --source-cluster <cc-basic-id> --source-bootstrap-server <cc-basic-bootstrap> \
   --source-api-key <basic-key> --source-api-secret <basic-secret> \
   --config consumer.offset.sync.enable=true,consumer.offset.sync.ms=30000
-confluent kafka mirror create orders.order-status.updated.v1 --link cc-dr-link --cluster <cc-paid-id>
-confluent kafka mirror failover orders.order-status.updated.v1 --link cc-dr-link --cluster <cc-paid-id>
+confluent kafka mirror create billing.call-record.created.v1 --link cc-dr-link --cluster <cc-paid-id>
+confluent kafka mirror failover billing.call-record.created.v1 --link cc-dr-link --cluster <cc-paid-id>
 ```
 
 (Group filters contain commas, so put them in a config file and pass `--config <file>`.)
@@ -609,7 +611,7 @@ confluent kafka mirror failover orders.order-status.updated.v1 --link cc-dr-link
 # Verification checklist
 
 - [ ] A3: end offsets equal on dc-a and dc-b; record at p0/o5 identical.
-- [ ] A3: `ops-dashboard` offsets appear on dc-b without the group ever running there.
+- [ ] A3: `billing-rater` offsets appear on dc-b without the group ever running there.
 - [ ] A5: after failover the group reads exactly the 40 unread records.
 - [ ] B4: truncate-and-restore reports 5 truncated records; `DIVERGENT` count on dc-a = 0.
 - [ ] B5: dc-a `STOPPED` (writable source), dc-b `ACTIVE` (mirror); group resumes at 60.
@@ -622,10 +624,10 @@ confluent kafka mirror failover orders.order-status.updated.v1 --link cc-dr-link
 # local
 b kafka-cluster-links --bootstrap-server dc-b:29092 --delete --link bidi-link   # mirror topics must be STOPPED/removed first
 a kafka-cluster-links --bootstrap-server dc-a:29092 --delete --link bidi-link
-docker compose -f $LAB/docker-compose.yml --profile mm2 down -v                 # or keep for module 08
+docker compose -f $LAB/docker-compose.yml --profile mm2 down -v
 
 # paid-session
-cd $LAB/work/tf-01 && terraform destroy        # if a mirror was failed over: terraform state rm the mirror first
+cd $LAB/work/tf-02 && terraform destroy        # if a mirror was failed over: terraform state rm the mirror first
 cd $LAB/terraform && terraform apply -var enable_paid_dedicated=false
 ```
 

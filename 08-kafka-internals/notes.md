@@ -1,5 +1,5 @@
 ---
-title: 07 — Kafka internals (part 1)
+title: 08 — Kafka internals (part 1)
 subtitle: Brokers, storage, replication and ISR, KRaft control plane, producer internals, guarantees — each internal tied to an architecture consequence. Kafka 4.x / CP 8.x, checked 2026-11-07.
 ---
 
@@ -25,13 +25,13 @@ Source: https://developer.confluent.io/courses/architecture/get-started/
 - A **storage layer** (brokers holding partition logs) and a **compute layer** (producers,
   consumers, Connect, Streams, Flink) that only talks to it through the Producer/Consumer APIs.
 - Record = timestamp, key, value, headers. Key and value are **bytes** to the broker. The broker
-  never parses payloads (one exception: Confluent broker-side schema *ID* validation, module 03).
+  never parses payloads (one exception: Confluent broker-side schema *ID* validation, module 04).
 - Topic → partitions. A partition is an append-only log; offsets increase and are never reused.
   **Partition = unit of ordering, parallelism and placement.**
 
 | Internal | Architecture consequence |
 |---|---|
-| Ordering only within a partition | Pick the key from the business invariant: `orderId` for order status, `itemTag` for item scans. Ordering across orders does not exist. |
+| Ordering only within a partition | Pick the key from the business invariant: `subscriberRef` for call records, `alarmId` for cell alarms. Ordering across subscribers does not exist. |
 | Broker treats payload as bytes | Contracts and validation must live in clients/registry; Cluster Linking can copy bytes without understanding them. |
 | Partition count is fixed per key mapping | Adding partitions later moves keys to new partitions → ordering breaks across the change. Size once per major version; `.v2` topic if you must change. |
 
@@ -140,7 +140,7 @@ send() → serializer (key, value) → partitioner → RecordAccumulator (batch 
 
 | Internal | Architecture consequence |
 |---|---|
-| Hash of key mod partition count | Hot keys = hot partitions (e.g. keying by customer puts your largest customer's volume on one partition). Key by the entity whose order matters. |
+| Hash of key mod partition count | Hot keys = hot partitions (e.g. keying by customer account puts your largest corporate customer's volume on one partition). Key by the entity whose order matters. |
 | librdkafka default partitioner differs from Java (consistent_random vs murmur2) [V] | Mixed-language producers to one topic must set the same partitioner, or the same key lands on different partitions. |
 | Batches are compressed once by the producer | Brokers and Cluster Linking keep the compressed batch → compression reduces disk, replication and **ExpressRoute egress**. |
 | Idempotence is per producer session | It removes retry duplicates, not application-level resends after a crash. Consumers must still be idempotent (or use transactions, part 2). |
@@ -317,9 +317,9 @@ Questions an architect asks the team that owns the platform:
    Kafka-to-Kafka you use transactions; for external sinks you need idempotent writes or upserts by
    key.
 
-9. **"How do you choose the partition key for order status?"**
-   By the entity whose events must stay ordered: the order ID. Not the customer (hot
-   partitions) and not the location (an order changes location, so its events split). Partition count is
+9. **"How do you choose the partition key for call records?"**
+   By the entity whose events must stay ordered: the subscriber reference. Not the customer account (hot
+   partitions) and not the cell (a subscriber moves between cells, so its events split). Partition count is
    sized for consumer parallelism of the busiest consumer and stays fixed for the topic version.
 
 # 7. Sources

@@ -1,7 +1,9 @@
 ---
-title: 05 — Lab — team service accounts, prefix RBAC, OAuth with Entra ID, audit log, quotas
+title: 06 — Lab — team service accounts, prefix RBAC, OAuth with Entra ID, audit log, quotas
 subtitle: Part 1 on cc-basic (ACLs, because Basic has no Kafka RBAC), Part 2 on a temporary Standard cluster (RBAC, OAuth, audit log), Part 3 quota in the paid-session, Part 4 quotas on local CP
 ---
+
+> **Video:** episode 6, "Who is allowed to read this" (coming soon). The video gives the reasoning; this lab lets you see it happen.
 
 ## Goal
 
@@ -16,20 +18,21 @@ subtitle: Part 1 on cc-basic (ACLs, because Basic has no Kafka RBAC), Part 2 on 
 | Feature | Basic | Standard | Enterprise | Where this lab does it |
 |---|---|---|---|---|
 | Service accounts, API keys, ACLs | yes | yes | yes | Part 1, `cc-basic` |
-| RBAC on topics / groups | **no** | yes | yes | Part 2, `cc-std-lab05` |
+| RBAC on topics / groups | **no** | yes | yes | Part 2, `cc-std-lab06` |
 | OAuth for Kafka | **no** | yes | yes | Part 2 |
 | Audit logs | **no** | yes | yes | Part 2 |
-| Client quotas | **no** | **no** | yes | Part 3, `paid-session` Enterprise cluster (module 02) |
+| Client quotas | **no** | **no** | yes | Part 3, `paid-session` Enterprise cluster (module 03) |
 | Quotas incl. `request_percentage` | — | — | — | Part 4, `local` `dc-a` |
 
-`cc-std-lab05` = a **Standard** cluster on Azure `westeurope` in environment `crash-course`, created at the start of Part 2 and deleted at the end. List price is 0.75 USD per eCKU-hour and Standard scales to zero when idle **[V]**, so 2 hours cost about 1–2 USD. This is an addition to the agreed environments; it is the cheapest way to test RBAC, OAuth and audit logs. If you prefer, run Part 2 against the paid-session Enterprise cluster from the VM instead (Enterprise supports all of it) — then skip the Standard cluster.
+`cc-std-lab06` = a **Standard** cluster on Azure `westeurope` in environment `crash-course`, created at the start of Part 2 and deleted at the end. List price is 0.75 USD per eCKU-hour and Standard scales to zero when idle **[V]**, so 2 hours cost about 1–2 USD. This is an addition to the agreed environments; it is the cheapest way to test RBAC, OAuth and audit logs. If you prefer, run Part 2 against the paid-session Enterprise cluster from the VM instead (Enterprise supports all of it) — then skip the Standard cluster.
 
 ## Prerequisites
 
 - `confluent` CLI v4.x as OrganizationAdmin (identity providers and audit-log keys need it).
 - `az` CLI with rights to create app registrations in your Entra tenant (Application Developer or higher) and to grant app role assignments (Cloud Application Administrator or the app owner).
 - Kafka 4.x CLI tools (or CP 8.x) and Java 17+; `jq`, `curl`, `base64`.
-- Topics used: `orders.order-status.updated.v1`, `tracking.item-scan.recorded.v1`, `sites.queue-length.measured.v1` (PII-free), `customers.customer-journey.v1` (PII).
+- Topics used: `billing.call-record.created.v1`, `noc.cell-alarm.raised.v1`, `network.cell-load.measured.v1` (PII-free), `customers.subscriber-profile.v1` (PII).
+- Part 4 (`local`): start clean, because module 02 created the same topic on `dc-a`: `( cd "$LAB" && docker compose down -v && docker compose up -d )`
 
 ```bash
 cd ../00-lab-setup/terraform
@@ -46,53 +49,53 @@ confluent environment use $CC_ENV
 
 ```bash
 confluent kafka cluster use $CC_BASIC
-for t in orders.order-status.updated.v1 tracking.item-scan.recorded.v1 sites.queue-length.measured.v1 customers.customer-journey.v1; do
+for t in billing.call-record.created.v1 noc.cell-alarm.raised.v1 network.cell-load.measured.v1 customers.subscriber-profile.v1; do
   confluent kafka topic create $t --partitions 3 2>/dev/null || true
 done
 
-for sa in sa-orders-producer sa-analytics-consumer sa-sites-app; do
-  confluent iam service-account create $sa --description "lab05 team account" -o json > /tmp/$sa.json
+for sa in sa-billing-producer sa-analytics-consumer sa-cells-app; do
+  confluent iam service-account create $sa --description "lab06 team account" -o json > /tmp/$sa.json
 done
-ORD=$(jq -r .id /tmp/sa-orders-producer.json)
+BIL=$(jq -r .id /tmp/sa-billing-producer.json)
 ANA=$(jq -r .id /tmp/sa-analytics-consumer.json)
-SIT=$(jq -r .id /tmp/sa-sites-app.json)
+CEL=$(jq -r .id /tmp/sa-cells-app.json)
 ```
 
 ACLs by prefix (Basic has no Kafka RBAC):
 
 ```bash
-# orders team: write its own domain only
-confluent kafka acl create --allow --service-account $ORD --operations write,describe --topic orders. --prefix
-# analytics: read PII-free topics + own consumer groups; NOT the customer journey
-confluent kafka acl create --allow --service-account $ANA --operations read,describe --topic orders. --prefix
-confluent kafka acl create --allow --service-account $ANA --operations read,describe --topic sites.queue-length. --prefix
+# billing team: write its own domain only
+confluent kafka acl create --allow --service-account $BIL --operations write,describe --topic billing. --prefix
+# analytics: read PII-free topics + own consumer groups; NOT the subscriber profile
+confluent kafka acl create --allow --service-account $ANA --operations read,describe --topic billing. --prefix
+confluent kafka acl create --allow --service-account $ANA --operations read,describe --topic network.cell-load. --prefix
 confluent kafka acl create --allow --service-account $ANA --operations read --consumer-group analytics- --prefix
-# sites team: read/write its domain
-confluent kafka acl create --allow --service-account $SIT --operations read,write,describe --topic sites. --prefix
-confluent kafka acl create --allow --service-account $SIT --operations read --consumer-group sites- --prefix
+# network team: read/write its domain
+confluent kafka acl create --allow --service-account $CEL --operations read,write,describe --topic network. --prefix
+confluent kafka acl create --allow --service-account $CEL --operations read --consumer-group cells- --prefix
 confluent kafka acl list
 ```
 
 Keys and tests:
 
 ```bash
-for s in $ORD $ANA $SIT; do confluent api-key create --resource $CC_BASIC --service-account $s -o json > /tmp/key-$s.json; done
+for s in $BIL $ANA $CEL; do confluent api-key create --resource $CC_BASIC --service-account $s -o json > /tmp/key-$s.json; done
 sleep 60
 k() { echo "--api-key $(jq -r .api_key /tmp/key-$1.json) --api-secret $(jq -r .api_secret /tmp/key-$1.json)"; }
 
-echo 'SO-1001234:{"status":"READY"}' | confluent kafka topic produce orders.order-status.updated.v1 $(k $ORD) --parse-key --delimiter ":"
-echo 'X:{"x":1}'  | confluent kafka topic produce tracking.item-scan.recorded.v1 $(k $ORD) --parse-key --delimiter ":"
-confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group analytics-lab05 -b
-confluent kafka topic consume customers.customer-journey.v1 $(k $ANA) --group analytics-lab05 -b
-confluent kafka topic consume orders.order-status.updated.v1 $(k $ANA) --group other-group -b
+echo 'SUB-1001234:{"recordType":"VOICE"}' | confluent kafka topic produce billing.call-record.created.v1 $(k $BIL) --parse-key --delimiter ":"
+echo 'X:{"x":1}'  | confluent kafka topic produce noc.cell-alarm.raised.v1 $(k $BIL) --parse-key --delimiter ":"
+confluent kafka topic consume billing.call-record.created.v1 $(k $ANA) --group analytics-lab06 -b
+confluent kafka topic consume customers.subscriber-profile.v1 $(k $ANA) --group analytics-lab06 -b
+confluent kafka topic consume billing.call-record.created.v1 $(k $ANA) --group other-group -b
 ```
 
 | Command | Expected |
 |---|---|
-| orders produce to `orders.` | success |
-| orders produce to `tracking.` | `TOPIC_AUTHORIZATION_FAILED` |
-| analytics consume `orders.` with group `analytics-lab05` | record printed |
-| analytics consume `customers.customer-journey.v1` | topic authorization failed |
+| billing produce to `billing.` | success |
+| billing produce to `noc.` | `TOPIC_AUTHORIZATION_FAILED` |
+| analytics consume `billing.` with group `analytics-lab06` | record printed |
+| analytics consume `customers.subscriber-profile.v1` | topic authorization failed |
 | analytics consume with group `other-group` | **group** authorization failed — the classic onboarding error |
 
 API key rotation drill (two-key overlap):
@@ -108,25 +111,25 @@ Schema Registry is environment-level, so **subject RBAC works even with a Basic 
 ```bash
 SR_ID=$(confluent schema-registry cluster describe -o json | jq -r '.cluster // .id')
 confluent iam rbac role-binding create --principal User:$ANA --role DeveloperRead \
-  --environment $CC_ENV --schema-registry-cluster $SR_ID --resource "Subject:orders." --prefix
+  --environment $CC_ENV --schema-registry-cluster $SR_ID --resource "Subject:billing." --prefix
 ```
 
 ---
 
-## Part 2 — RBAC, OAuth with Entra ID and audit log on `cc-std-lab05`
+## Part 2 — RBAC, OAuth with Entra ID and audit log on `cc-std-lab06`
 
 ### 2.1 Standard cluster and RBAC prefix bindings (CLI)
 
 ```bash
-confluent kafka cluster create cc-std-lab05 --cloud azure --region westeurope --type standard -o json | tee /tmp/std.json
+confluent kafka cluster create cc-std-lab06 --cloud azure --region westeurope --type standard -o json | tee /tmp/std.json
 STD=$(jq -r .id /tmp/std.json)
 confluent kafka cluster use $STD
-for t in orders.order-status.updated.v1 sites.queue-length.measured.v1 customers.customer-journey.v1; do confluent kafka topic create $t --partitions 3; done
+for t in billing.call-record.created.v1 network.cell-load.measured.v1 customers.subscriber-profile.v1; do confluent kafka topic create $t --partitions 3; done
 
-confluent iam rbac role-binding create --principal User:$ORD --role DeveloperWrite --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:orders. --prefix
-confluent iam rbac role-binding create --principal User:$ANA --role DeveloperRead  --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:sites.queue-length. --prefix
+confluent iam rbac role-binding create --principal User:$BIL --role DeveloperWrite --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:billing. --prefix
+confluent iam rbac role-binding create --principal User:$ANA --role DeveloperRead  --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:network.cell-load. --prefix
 confluent iam rbac role-binding create --principal User:$ANA --role DeveloperRead  --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Group:analytics- --prefix
-confluent iam rbac role-binding create --principal User:$SIT --role ResourceOwner  --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:sites. --prefix
+confluent iam rbac role-binding create --principal User:$CEL --role ResourceOwner  --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:network. --prefix
 confluent iam rbac role-binding list --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD -o json | jq '.[] | {principal, role, resource_type, name, pattern_type}'
 ```
 
@@ -138,8 +141,8 @@ Expected: bindings listed with `pattern_type: PREFIXED`. Repeat the tests from P
 # Resource app = "Kafka" API, v2 tokens, one app role for applications
 ROLE_ID=$(uuidgen | tr A-Z a-z)
 cat > /tmp/roles.json <<EOF
-[{"allowedMemberTypes":["Application"],"description":"Read sites topics (PII-free)","displayName":"Kafka.Sites.Read",
-  "id":"$ROLE_ID","isEnabled":true,"value":"Kafka.Sites.Read"}]
+[{"allowedMemberTypes":["Application"],"description":"Read cell-load topics (PII-free)","displayName":"Kafka.Cells.Read",
+  "id":"$ROLE_ID","isEnabled":true,"value":"Kafka.Cells.Read"}]
 EOF
 API_APPID=$(az ad app create --display-name crash-kafka-api --identifier-uris api://crash-kafka-api --app-roles @/tmp/roles.json --query appId -o tsv)
 # If your tenant's app management policy rejects a non-standard Application ID URI [V],
@@ -153,7 +156,7 @@ API_SP=$(az ad sp create --id $API_APPID --query id -o tsv)
 # Client app = analytics Databricks workload
 ANA_APPID=$(az ad app create --display-name crash-analytics-databricks --query appId -o tsv)
 ANA_SP=$(az ad sp create --id $ANA_APPID --query id -o tsv)
-ANA_SECRET=$(az ad app credential reset --id $ANA_APPID --display-name lab05 --years 1 --query password -o tsv)
+ANA_SECRET=$(az ad app credential reset --id $ANA_APPID --display-name lab06 --years 1 --query password -o tsv)
 
 # Assign the app role DIRECTLY to the workload's service principal
 az rest --method POST --uri https://graph.microsoft.com/v1.0/servicePrincipals/$ANA_SP/appRoleAssignments \
@@ -170,7 +173,7 @@ jwt() { python3 -c 'import sys,json,base64;p=sys.argv[1].split(".")[1];p+="="*(-
 jwt $TOKEN | jq '{iss, aud, sub, azp, roles, ver, exp}'
 ```
 
-Expected: `iss` = `https://login.microsoftonline.com/<tenant>/v2.0`, `ver` = `2.0`, `aud` = `$API_APPID` (a GUID), `roles` = `["Kafka.Sites.Read"]`, `sub` = `$ANA_SP`. If `iss` starts with `https://sts.windows.net/`, the v2 setting did not apply — wait a minute and retry; this is the pitfall from notes §2.4.
+Expected: `iss` = `https://login.microsoftonline.com/<tenant>/v2.0`, `ver` = `2.0`, `aud` = `$API_APPID` (a GUID), `roles` = `["Kafka.Cells.Read"]`, `sub` = `$ANA_SP`. If `iss` starts with `https://sts.windows.net/`, the v2 setting did not apply — wait a minute and retry; this is the pitfall from notes §2.4.
 
 ### 2.3 Confluent: identity provider, pool, role bindings (CLI)
 
@@ -180,12 +183,12 @@ confluent iam provider create entra-crash --description "Entra ID tenant, v2 tok
   --jwks-uri https://login.microsoftonline.com/$TENANT/discovery/v2.0/keys -o json | tee /tmp/idp.json
 IDP=$(jq -r .id /tmp/idp.json)
 
-confluent iam pool create pool-sites-read --provider $IDP --identity-claim claims.sub \
-  --description "workloads with app role Kafka.Sites.Read" \
-  --filter "claims.aud == \"$API_APPID\" && \"Kafka.Sites.Read\" in claims.roles" -o json | tee /tmp/pool.json
+confluent iam pool create pool-cells-read --provider $IDP --identity-claim claims.sub \
+  --description "workloads with app role Kafka.Cells.Read" \
+  --filter "claims.aud == \"$API_APPID\" && \"Kafka.Cells.Read\" in claims.roles" -o json | tee /tmp/pool.json
 POOL=$(jq -r .id /tmp/pool.json)
 
-confluent iam rbac role-binding create --principal User:$POOL --role DeveloperRead --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:sites.queue-length. --prefix
+confluent iam rbac role-binding create --principal User:$POOL --role DeveloperRead --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Topic:network.cell-load. --prefix
 confluent iam rbac role-binding create --principal User:$POOL --role DeveloperRead --environment $CC_ENV --cloud-cluster $STD --kafka-cluster $STD --resource Group:analytics- --prefix
 ```
 
@@ -205,22 +208,22 @@ sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginMo
 EOF
 export KAFKA_OPTS="-Dorg.apache.kafka.sasl.oauthbearer.allowed.urls=https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token"
 
-# seed one record with the sites service account key
-echo 'ZONE-A2:{"queue_minutes":7}' | confluent kafka topic produce sites.queue-length.measured.v1 \
-  --api-key <SIT key for STD> --api-secret <secret> --parse-key --delimiter ":"
+# seed one record with the cells service account key
+echo 'CELL-0412:{"loadPercent":7}' | confluent kafka topic produce network.cell-load.measured.v1 \
+  --api-key <CEL key for STD> --api-secret <secret> --parse-key --delimiter ":"
 
 kafka-console-consumer.sh --bootstrap-server $BOOT --consumer.config /tmp/oauth.properties \
-  --topic sites.queue-length.measured.v1 --group analytics-oauth --from-beginning --max-messages 1
+  --topic network.cell-load.measured.v1 --group analytics-oauth --from-beginning --max-messages 1
 kafka-console-consumer.sh --bootstrap-server $BOOT --consumer.config /tmp/oauth.properties \
-  --topic customers.customer-journey.v1 --group analytics-oauth --from-beginning --max-messages 1 --timeout-ms 15000
+  --topic customers.subscriber-profile.v1 --group analytics-oauth --from-beginning --max-messages 1 --timeout-ms 15000
 echo 'x:1' | kafka-console-producer.sh --bootstrap-server $BOOT --producer.config /tmp/oauth.properties \
-  --topic sites.queue-length.measured.v1 --reader-property parse.key=true --reader-property key.separator=:
+  --topic network.cell-load.measured.v1 --reader-property parse.key=true --reader-property key.separator=:
 ```
 
 | Test | Expected |
 |---|---|
-| consume `sites.queue-length.measured.v1` | the record — authenticated as `pool-…`, authorised by prefix |
-| consume `customers.customer-journey.v1` | `TopicAuthorizationException` |
+| consume `network.cell-load.measured.v1` | the record — authenticated as `pool-…`, authorised by prefix |
+| consume `customers.subscriber-profile.v1` | `TopicAuthorizationException` |
 | produce | authorization failed (read-only pool) |
 | run without `KAFKA_OPTS` | client refuses the token endpoint URL — the Kafka 4.x allowed-URLs check |
 | remove `extension_identityPoolId` from the JAAS line | still works — **auto pool mapping** |
@@ -233,7 +236,7 @@ ASSIGN_ID=$(az rest --method GET --uri https://graph.microsoft.com/v1.0/serviceP
 az rest --method DELETE --uri https://graph.microsoft.com/v1.0/servicePrincipals/$ANA_SP/appRoleAssignments/$ASSIGN_ID
 
 # Put the SP in a security group and assign the app role to the group instead
-GRP=$(az ad group create --display-name crash-kafka-sites-readers --mail-nickname crash-kafka-sites-readers --query id -o tsv)
+GRP=$(az ad group create --display-name crash-kafka-cells-readers --mail-nickname crash-kafka-cells-readers --query id -o tsv)
 az ad group member add --group $GRP --member-id $ANA_SP
 az rest --method POST --uri https://graph.microsoft.com/v1.0/groups/$GRP/appRoleAssignments \
   --body "{\"principalId\":\"$GRP\",\"resourceId\":\"$API_SP\",\"appRoleId\":\"$ROLE_ID\"}"
@@ -272,7 +275,7 @@ jq -c 'select(.data.authenticationInfo.principal | tostring | test("pool-")) | {
 jq -c 'select(.data.methodName | test("RoleBinding|ApiKey"; "i")) | {time, method: .data.methodName, principal: .data.authenticationInfo.principal}' /tmp/audit.jsonl | tail -10
 ```
 
-Expected: denied `kafka.Fetch`/`kafka.Produce`-style entries for the analytics identity on `customers.customer-journey.v1`; authentication entries showing `pool-…` and the `sub`; role-binding creations from 2.1/2.3. Events can take a few minutes to appear. Switch back: `confluent environment use $CC_ENV`.
+Expected: denied `kafka.Fetch`/`kafka.Produce`-style entries for the analytics identity on `customers.subscriber-profile.v1`; authentication entries showing `pool-…` and the `sub`; role-binding creations from 2.1/2.3. Events can take a few minutes to appear. Switch back: `confluent environment use $CC_ENV`.
 
 Note what is **not** there (for example every allowed fetch) and write it down — that is the answer to "is the audit log enough for NIS2?".
 
@@ -295,7 +298,7 @@ data "azuread_client_config" "me" {}
 data "confluent_environment" "env" { id = var.env_id }
 
 # ---------- Entra ----------
-resource "random_uuid" "role_sites_read" {}
+resource "random_uuid" "role_cells_read" {}
 
 resource "azuread_application" "kafka_api" {
   display_name    = "crash-kafka-api"
@@ -304,11 +307,11 @@ resource "azuread_application" "kafka_api" {
   api { requested_access_token_version = 2 }          # v2 tokens, or issuer mismatch
   app_role {
     allowed_member_types = ["Application"]
-    description          = "Read sites topics (PII-free)"
-    display_name         = "Kafka.Sites.Read"
-    id                   = random_uuid.role_sites_read.result
+    description          = "Read cell-load topics (PII-free)"
+    display_name         = "Kafka.Cells.Read"
+    id                   = random_uuid.role_cells_read.result
     enabled              = true
-    value                = "Kafka.Sites.Read"
+    value                = "Kafka.Cells.Read"
   }
 }
 resource "azuread_service_principal" "kafka_api" {
@@ -326,15 +329,15 @@ resource "azuread_application_password" "analytics" {
   application_id = azuread_application.analytics.id
 }
 # Direct assignment to the SP — group assignments are not evaluated for client credentials
-resource "azuread_app_role_assignment" "analytics_sites_read" {
-  app_role_id         = random_uuid.role_sites_read.result
+resource "azuread_app_role_assignment" "analytics_cells_read" {
+  app_role_id         = random_uuid.role_cells_read.result
   principal_object_id = azuread_service_principal.analytics.object_id
   resource_object_id  = azuread_service_principal.kafka_api.object_id
 }
 
 # ---------- Confluent ----------
 resource "confluent_kafka_cluster" "std" {
-  display_name = "cc-std-lab05"
+  display_name = "cc-std-lab06"
   availability = "SINGLE_ZONE"
   cloud        = "AZURE"
   region       = "westeurope"
@@ -343,34 +346,34 @@ resource "confluent_kafka_cluster" "std" {
 }
 
 resource "confluent_service_account" "team" {
-  for_each     = toset(["orders-producer", "analytics-consumer", "sites-app"])
+  for_each     = toset(["billing-producer", "analytics-consumer", "cells-app"])
   display_name = "sa-${each.key}-tf"
-  description  = "lab05 team account (terraform)"
+  description  = "lab06 team account (terraform)"
 }
 
 locals {
   kafka_crn = "${confluent_kafka_cluster.std.rbac_crn}/kafka=${confluent_kafka_cluster.std.id}"
 }
 
-resource "confluent_role_binding" "orders_write" {
-  principal   = "User:${confluent_service_account.team["orders-producer"].id}"
+resource "confluent_role_binding" "billing_write" {
+  principal   = "User:${confluent_service_account.team["billing-producer"].id}"
   role_name   = "DeveloperWrite"
-  crn_pattern = "${local.kafka_crn}/topic=orders.*"
+  crn_pattern = "${local.kafka_crn}/topic=billing.*"
 }
 resource "confluent_role_binding" "analytics_read_topic" {
   principal   = "User:${confluent_service_account.team["analytics-consumer"].id}"
   role_name   = "DeveloperRead"
-  crn_pattern = "${local.kafka_crn}/topic=sites.queue-length.*"
+  crn_pattern = "${local.kafka_crn}/topic=network.cell-load.*"
 }
 resource "confluent_role_binding" "analytics_read_group" {
   principal   = "User:${confluent_service_account.team["analytics-consumer"].id}"
   role_name   = "DeveloperRead"
   crn_pattern = "${local.kafka_crn}/group=analytics-*"
 }
-resource "confluent_role_binding" "sites_owner" {
-  principal   = "User:${confluent_service_account.team["sites-app"].id}"
+resource "confluent_role_binding" "cells_owner" {
+  principal   = "User:${confluent_service_account.team["cells-app"].id}"
   role_name   = "ResourceOwner"
-  crn_pattern = "${local.kafka_crn}/topic=sites.*"
+  crn_pattern = "${local.kafka_crn}/topic=network.*"
 }
 
 resource "confluent_identity_provider" "entra" {
@@ -380,28 +383,28 @@ resource "confluent_identity_provider" "entra" {
   jwks_uri     = "https://login.microsoftonline.com/${data.azuread_client_config.me.tenant_id}/discovery/v2.0/keys"
 }
 
-resource "confluent_identity_pool" "sites_read" {
+resource "confluent_identity_pool" "cells_read" {
   identity_provider { id = confluent_identity_provider.entra.id }
-  display_name   = "pool-sites-read"
-  description    = "workloads with app role Kafka.Sites.Read"
+  display_name   = "pool-cells-read"
+  description    = "workloads with app role Kafka.Cells.Read"
   identity_claim = "claims.sub"
-  filter         = "claims.aud == \"${azuread_application.kafka_api.client_id}\" && \"Kafka.Sites.Read\" in claims.roles"
+  filter         = "claims.aud == \"${azuread_application.kafka_api.client_id}\" && \"Kafka.Cells.Read\" in claims.roles"
 }
 
 resource "confluent_role_binding" "pool_read_topic" {
-  principal   = "User:${confluent_identity_pool.sites_read.id}"
+  principal   = "User:${confluent_identity_pool.cells_read.id}"
   role_name   = "DeveloperRead"
-  crn_pattern = "${local.kafka_crn}/topic=sites.queue-length.*"
+  crn_pattern = "${local.kafka_crn}/topic=network.cell-load.*"
 }
 resource "confluent_role_binding" "pool_read_group" {
-  principal   = "User:${confluent_identity_pool.sites_read.id}"
+  principal   = "User:${confluent_identity_pool.cells_read.id}"
   role_name   = "DeveloperRead"
   crn_pattern = "${local.kafka_crn}/group=analytics-*"
 }
 
 output "cluster_id"   { value = confluent_kafka_cluster.std.id }
 output "bootstrap"    { value = confluent_kafka_cluster.std.bootstrap_endpoint }
-output "pool_id"      { value = confluent_identity_pool.sites_read.id }
+output "pool_id"      { value = confluent_identity_pool.cells_read.id }
 output "analytics_client_id" { value = azuread_application.analytics.client_id }
 output "analytics_secret" {
   value     = azuread_application_password.analytics.value
@@ -412,7 +415,7 @@ output "token_scope"  { value = "api://crash-kafka-api/.default" }
 
 This block passes `terraform validate` with confluent 2.94.0 and azuread 3.10.0 (checked 2026-11-07); `apply` has not been run.
 
-Topics: add `confluent_kafka_topic` resources with an admin API key (pattern as in module 04), or create them with the CLI. The audit-log key is not worth Terraform for a lab.
+Topics: add `confluent_kafka_topic` resources with an admin API key (pattern as in module 05), or create them with the CLI. The audit-log key is not worth Terraform for a lab.
 
 ### Teardown Part 2
 
@@ -432,43 +435,43 @@ Terraform path: `terraform destroy`.
 
 ## Part 3 — Client quota in Confluent Cloud (`paid-session`)
 
-Run while the module 02 Enterprise cluster exists, from the VM in the VNet. Quotas need Enterprise, Freight or Dedicated.
+Run while the module 03 Enterprise cluster exists, from the VM in the VNet. Quotas need Enterprise, Freight or Dedicated.
 
 ```bash
-ENT=<lkc of cc-ent-lab02>
-confluent iam service-account create sa-analytics-replay --description "lab05 quota test" -o json > sa-replay.json
+ENT=<lkc of cc-ent-lab03>
+confluent iam service-account create sa-analytics-replay --description "lab06 quota test" -o json > sa-replay.json
 REP=$(jq -r .id sa-replay.json)
-confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:tracking. --prefix
-confluent iam rbac role-binding create --principal User:$REP --role DeveloperWrite --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:tracking. --prefix
+confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:noc. --prefix
+confluent iam rbac role-binding create --principal User:$REP --role DeveloperWrite --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Topic:noc. --prefix
 confluent iam rbac role-binding create --principal User:$REP --role DeveloperRead  --environment $CC_ENV --cloud-cluster $ENT --kafka-cluster $ENT --resource Group:analytics- --prefix
 confluent api-key create --resource $ENT --service-account $REP -o json > key-replay.json
-# client properties replay.properties as in module 02 C1 step 8, with this key
+# client properties replay.properties as in module 03 C1 step 8, with this key
 
 # baseline
-kafka-producer-perf-test.sh --topic tracking.item-scan.recorded.v1 --num-records 50000 --record-size 1000 \
+kafka-producer-perf-test.sh --topic noc.cell-alarm.raised.v1 --num-records 50000 --record-size 1000 \
   --throughput -1 --producer.config replay.properties
 
 # 1 MB/s ingress and egress for this principal
-confluent kafka quota create lab05-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT
+confluent kafka quota create lab06-analytics-replay --ingress 1048576 --egress 1048576 --principals $REP --cluster $ENT
 confluent kafka quota list --cluster $ENT
 sleep 60
-kafka-producer-perf-test.sh --topic tracking.item-scan.recorded.v1 --num-records 50000 --record-size 1000 \
+kafka-producer-perf-test.sh --topic noc.cell-alarm.raised.v1 --num-records 50000 --record-size 1000 \
   --throughput -1 --producer.config replay.properties
 kafka-consumer-perf-test.sh --bootstrap-server $BOOT_PL:9092 --consumer.config replay.properties \
-  --topic tracking.item-scan.recorded.v1 --group analytics-replay --messages 50000
+  --topic noc.cell-alarm.raised.v1 --group analytics-replay --messages 50000
 ```
 
 Expected: baseline several MB/s; after the quota about **1 MB/s** (≈1,000 records/s) for both tools, with latency going up — that is throttling, not errors. Add a default quota for everyone else:
 
 ```bash
-confluent kafka quota create lab05-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
+confluent kafka quota create lab06-default --ingress 5242880 --egress 5242880 --principals "<default>" --cluster $ENT
 ```
 
 Terraform equivalent:
 
 ```hcl
 resource "confluent_kafka_client_quota" "analytics_replay" {
-  display_name = "lab05-analytics-replay"
+  display_name = "lab06-analytics-replay"
   description  = "cap analytics backfills"
   throughput {
     ingress_byte_rate = "1048576"
@@ -480,7 +483,7 @@ resource "confluent_kafka_client_quota" "analytics_replay" {
 }
 ```
 
-Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-account delete $REP --force` — then the module 02 teardown removes the cluster.
+Teardown: `confluent kafka quota delete <id>` for both, `confluent iam service-account delete $REP --force` — then the module 03 teardown removes the cluster.
 
 ---
 
@@ -490,8 +493,8 @@ Shows what CC does not have: request-rate quotas, and quotas by client id.
 
 ```bash
 DC=../00-lab-setup/docker-compose.yml
-docker compose -f $DC exec dc-a kafka-topics --bootstrap-server localhost:9092 --create --topic tracking.item-scan.recorded.v1 --partitions 3 2>/dev/null
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+docker compose -f $DC exec dc-a kafka-topics --bootstrap-server localhost:9092 --create --topic noc.cell-alarm.raised.v1 --partitions 3 2>/dev/null
+docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 100000 --record-size 1000 --throughput -1 \
   --producer-props bootstrap.servers=localhost:9092 client.id=replay-job
 
@@ -500,15 +503,15 @@ docker compose -f $DC exec dc-a kafka-configs --bootstrap-server localhost:9092 
   --entity-type clients --entity-name replay-job
 docker compose -f $DC exec dc-a kafka-configs --bootstrap-server localhost:9092 --describe --entity-type clients --entity-name replay-job
 
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 20000 --record-size 1000 --throughput -1 \
   --producer-props bootstrap.servers=localhost:9092 client.id=replay-job
-docker compose -f $DC exec dc-a kafka-producer-perf-test --topic tracking.item-scan.recorded.v1 \
+docker compose -f $DC exec dc-a kafka-producer-perf-test --topic noc.cell-alarm.raised.v1 \
   --num-records 20000 --record-size 1000 --throughput -1 \
-  --producer-props bootstrap.servers=localhost:9092 client.id=scan-processor
+  --producer-props bootstrap.servers=localhost:9092 client.id=alarm-processor
 ```
 
-Expected: `replay-job` drops to about 1 MB/s; `scan-processor` (no quota) keeps full speed — the isolation story in one picture. (Service names `dc-a` and port 9092 depend on `00-lab-setup`; adjust.)
+Expected: `replay-job` drops to about 1 MB/s; `alarm-processor` (no quota) keeps full speed — the isolation story in one picture. (Service names `dc-a` and port 9092 depend on `00-lab-setup`; adjust.)
 
 In production you quota by **user** (authenticated principal), not by client id, because any client can choose its client id. On the real platform the most important on-prem quota is on the Cluster Link principal (`notes-cp-security.md` §2.6).
 
@@ -523,7 +526,7 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 - [ ] Part 1: denied produce to another domain; denied consume without the group ACL.
 - [ ] Part 2: prefix RBAC bindings listed; OAuth token has v2 issuer and `roles`; OAuth consume works, PII topic and produce denied; group-assignment pitfall reproduced; audit log shows denials and `pool-…` authentications.
 - [ ] Part 3: throughput capped at ~1 MB/s for the quota principal.
-- [ ] Part 4: `replay-job` throttled, `scan-processor` not.
+- [ ] Part 4: `replay-job` throttled, `alarm-processor` not.
 
 ## Teardown summary
 
@@ -531,7 +534,7 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 |---|---|
 | 1 | `confluent api-key delete` for the three team keys; ACLs (`confluent kafka acl delete …`) or keep them on `cc-basic` for later modules; service accounts if not reused |
 | 2 | Standard cluster, identity pool, identity provider, audit key, Entra apps and group (see 2.7 teardown) |
-| 3 | quotas, `sa-analytics-replay` (cluster goes with module 02 teardown) |
+| 3 | quotas, `sa-analytics-replay` (cluster goes with module 03 teardown) |
 | 4 | client quota config on `dc-a` |
 
 ## Cost note
@@ -540,5 +543,5 @@ Remove: `kafka-configs … --alter --delete-config 'producer_byte_rate,consumer_
 |---|---|
 | Part 1 on Basic | free |
 | Part 2 Standard cluster, ~2 h | 0.75 USD/eCKU-h list → about 1–2 USD |
-| Part 3 | inside the module 02 paid-session budget |
+| Part 3 | inside the module 03 paid-session budget |
 | Entra app registrations, groups | free |

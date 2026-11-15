@@ -194,7 +194,7 @@ services:
     volumes:
       - ./work:/work
 
-  # Optional: Kafka Connect worker for the MirrorMaker 2 comparison (01-hybrid-multicloud lab).
+  # Optional: Kafka Connect worker for the MirrorMaker 2 comparison (02-hybrid-multicloud lab).
   # MM2 connectors (MirrorSourceConnector, MirrorCheckpointConnector, MirrorHeartbeatConnector)
   # ship with Apache Kafka; the community cp-kafka-connect image should list them under
   # /connector-plugins (checked 2026-11-08). Runs "near the target": its own topics live on dc-b.

@@ -1,5 +1,5 @@
 ---
-title: 04 — Client-side field-level encryption (CSFLE)
+title: 05 — Client-side field-level encryption (CSFLE)
 subtitle: KEK in Azure Key Vault, DEK Registry, tag-driven rules, rotation, what consumers without keys see, cost, and what it means for Databricks, Flink and Tableflow. Checked against CP and CC docs on 2026-11-07.
 ---
 
@@ -194,11 +194,11 @@ flowchart LR
     S1["Avro serializer<br/>+ ENCRYPT rule executor"]
   end
   subgraph SR["Schema Registry"]
-    SUB["Subject customers.customer-journey.v1-value<br/>schema + tag PII + rule set"]
+    SUB["Subject customers.subscriber-profile.v1-value<br/>schema + tag PII + rule set"]
     DEK[("DEK Registry<br/>KEK metadata + wrapped DEKs")]
   end
   KV[["Azure Key Vault<br/>RSA KEK kek-customers"]]
-  K[("Kafka topic<br/>name, national_id = ciphertext")]
+  K[("Kafka topic<br/>customerName, msisdn, email, nationalId = ciphertext")]
   subgraph C1["Consumer with access"]
     D1["deserializer<br/>RBAC on KEK + Key Vault role"]
   end
@@ -256,7 +256,7 @@ sequenceDiagram
 flowchart LR
   subgraph DC["On-prem CP 8.x"]
     EX["Export job<br/>(encrypts PII)"]
-    T1[("customers.customer-journey.v1")]
+    T1[("customers.subscriber-profile.v1")]
     SR1["SR + DEK Registry<br/>(write master)"]
   end
   subgraph CC["Confluent Cloud (Private Link)"]
@@ -298,11 +298,11 @@ flowchart LR
 
 This section assumes an organisation that runs mission-critical Confluent Platform on-prem in two data centres and wants to serve cloud (Azure) data and AI consumers without touching the operational clusters.
 
-- **First minimise, then encrypt.** An on-prem export job (Flink or Streams on OpenShift) builds `customers.customer-journey.v1` from operational topics: drop fields nobody in the cloud needs, pseudonymise the customer id, and encrypt the few PII fields that must travel (name, national ID number). Raw operational topics never enter the Cluster Link filter.
-- **Encrypt in the platform-owned export job, not in mission-critical producers.** Then order or tracking producers never depend on Key Vault availability; only the export job does, and only when a DEK is created or unwrapped.
+- **First minimise, then encrypt.** An on-prem export job (Flink or Streams on OpenShift) builds `customers.subscriber-profile.v1` from operational topics: drop fields nobody in the cloud needs, pseudonymise the subscriber id, and encrypt the few PII fields that must travel (name, phone number, email, national ID number). Raw operational topics never enter the Cluster Link filter.
+- **Encrypt in the platform-owned export job, not in mission-critical producers.** Then billing or NOC producers never depend on Key Vault availability; only the export job does, and only when a DEK is created or unwrapped.
 - **KEK placement:** non-shared KEK in **Azure Key Vault** (Managed HSM for prod **[V]** on price), one KEK per data domain and classification (`kek-customers-confidential`), owned by Security, not by the platform team. Reach Key Vault from the DC through its private endpoint over ExpressRoute. If data-sovereignty rules out a US cloud KMS, the alternative is an on-prem HSM or HashiCorp Vault Transit (non-shared only) — but then every Azure consumer needs a network path into the DC for key unwraps, which undoes part of the "nothing reaches into the DC" design. State this trade-off; do not hide it.
 - **Schema Linking must carry the keys:** grant the exporter `DeveloperWrite` on the KEK in Confluent Cloud, or mirror topics arrive with no usable DEKs.
-- **Data platform teams / Databricks:** the first analytics layer (Tableflow Delta in Unity Catalog) shows **ciphertext columns** for PII with a non-shared KEK — exactly what most analysts should see. Use **AES256_SIV deterministic** encryption on the pseudonymous customer key so joins and distinct counts work. The rare job that needs plaintext runs as a dedicated Databricks service principal with Key Vault Crypto User and the Confluent deserializer, and is audited.
+- **Data platform teams / Databricks:** the first analytics layer (Tableflow Delta in Unity Catalog) shows **ciphertext columns** for PII with a non-shared KEK — exactly what most analysts should see. Use **AES256_SIV deterministic** encryption on the pseudonymous subscriber reference so joins and distinct counts work. The rare job that needs plaintext runs as a dedicated Databricks service principal with Key Vault Crypto User and the Confluent deserializer, and is audited.
 - **Shared KEK only by explicit decision:** if the data teams want CC Flink to transform decrypted PII or Tableflow to land plaintext, that is a CISO/DPO decision because Confluent can then decrypt.
 - **Governance hook:** policy-as-code in the topic PR: a subject with a field tagged `PII` must have an ENCRYPT rule, or the topic cannot enter the link filter.
 

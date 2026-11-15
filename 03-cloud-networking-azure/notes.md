@@ -1,5 +1,5 @@
 ---
-title: 02 — Confluent Cloud networking, rewritten for Azure
+title: 03 — Confluent Cloud networking, rewritten for Azure
 subtitle: Public endpoints, VNet peering, Private Link (Dedicated vs Enterprise gateway), ExpressRoute, DNS, cost, and why on-prem brokers are hard to expose. Checked against docs on 2026-11-07.
 ---
 
@@ -256,7 +256,7 @@ OpenShift), and wants to serve data/AI consumers in Azure (Databricks, AI apps o
 touching the operational clusters. Identity is Entra ID; REST APIs go through an API gateway.
 
 - **Target**: on-prem CP → source-initiated Cluster Link → **ExpressRoute private peering** → private endpoint in the hub → **Enterprise** cluster in `westeurope` via the **ingress PrivateLink Gateway**. Data & analytics and AI spokes reach the same private endpoint through hub peering. No public endpoints on the cluster.
-- **Why Enterprise first**: provisions in minutes, elastic, one gateway covers Kafka + Schema Registry + Flink for the environment. Move to Dedicated only if a Dedicated-only feature is required (for example broker-side schema validation in CC, see [module 03](../03-stream-governance/notes.md)) or scale passes the Azure Private Link eCKU cap **[V]**.
+- **Why Enterprise first**: provisions in minutes, elastic, one gateway covers Kafka + Schema Registry + Flink for the environment. Move to Dedicated only if a Dedicated-only feature is required (for example broker-side schema validation in CC, see [module 04](../04-stream-governance/notes.md)) or scale passes the Azure Private Link eCKU cap **[V]**.
 - **Environments**: one gateway per environment and region. If you split `prod` and `non-prod` environments (you should), that is two gateways and two DNS zones. Plan the 10-endpoint-per-gateway limit if each spoke wants its own endpoint; usually one endpoint in the hub is enough.
 - **DNS**: Azure DNS Private Resolver in the hub; on-prem DNS conditional forwarder for the access-point zones. Most organisations already use this pattern for Azure PaaS private endpoints (Storage, Key Vault, Databricks), so reuse the existing DNS design rather than invent one.
 - **Firewall**: the link is a long-lived outbound TCP flow on 9092 (and 443 for REST/SR). Ask the network team for an FQDN-based rule and idle timeouts longer than Kafka's keepalive behaviour.
@@ -298,7 +298,7 @@ ExpressRoute ingress into Azure is free; Confluent charges cluster ingress per G
 No, inbound Private Link is one-way. For managed connectors to reach private Azure services, use **egress Private Link endpoints** (Confluent creates the endpoint to your Private Link service) or peering on Dedicated. Source-initiated Cluster Linking means Confluent never needs to reach the DC.
 
 **Q9. Public endpoint with IP filtering — good enough for non-sensitive streams?**
-For PII-free, non-critical data (queue-length sensors, test environments) it can be. IP filtering restricts management, schema, Flink and, per the operation groups, Kafka data **[V]** to known CIDRs, and OAuth with short-lived tokens removes long-lived secrets. But Confluent's ingress IPs are not static, so your own egress firewall must allow by FQDN, and the data still crosses the internet.
+For PII-free, non-critical data (cell-load measurements, test environments) it can be. IP filtering restricts management, schema, Flink and, per the operation groups, Kafka data **[V]** to known CIDRs, and OAuth with short-lived tokens removes long-lived secrets. But Confluent's ingress IPs are not static, so your own egress firewall must allow by FQDN, and the data still crosses the internet.
 
 **Q10. How do you avoid a single private endpoint becoming a bottleneck or SPOF?**
 A private endpoint is a zone-redundant Azure construct, not a VM, and has high throughput **[V]**. For the gateway model, add a second access point (another private endpoint) in another spoke if teams need isolation; for Dedicated multi-zone you already have three zonal endpoints. The bigger SPOF is ExpressRoute: two circuits or circuit + VPN.

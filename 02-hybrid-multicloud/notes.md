@@ -1,5 +1,5 @@
 ---
-title: 01 — Hybrid and multicloud architecture
+title: 02 — Hybrid and multicloud architecture
 subtitle: Cluster Linking, MirrorMaker 2 and Replicator, checked against Confluent Platform 8.4 / Confluent Cloud docs on 2026-11-07
 ---
 
@@ -117,7 +117,7 @@ docs: https://kafka.apache.org/documentation/#georeplication
 
 The course says "4 internal connectors and 3 internal topics"; the docs list the three connectors
 above plus the internal topics. Topic naming: `DefaultReplicationPolicy` renames
-`orders.x` to `dc-a.orders.x` (prevents loops in active/active).
+`billing.x` to `dc-a.billing.x` (prevents loops in active/active).
 `IdentityReplicationPolicy` keeps names but then you must prevent cycles yourself.
 
 **Offset translation is the weak spot.** MM2 records a sync point only every so often; for a
@@ -134,8 +134,8 @@ latency metrics exist, lag in records you build yourself). [V]
 ```mermaid
 flowchart LR
   subgraph SRC["dc-a (source)"]
-    T1["sites.queue-length.measured.v1"]
-    G1["__consumer_offsets<br/>group sites-ui"]
+    T1["network.cell-load.measured.v1"]
+    G1["__consumer_offsets<br/>group cells-ui"]
     OS["mm2-offset-syncs.dc-b.internal"]
   end
   subgraph CW["Connect cluster (runs near target)"]
@@ -144,7 +144,7 @@ flowchart LR
     MHC["MirrorHeartbeatConnector"]
   end
   subgraph TGT["dc-b (target)"]
-    T2["dc-a.sites.queue-length.measured.v1<br/>(new offsets)"]
+    T2["dc-a.network.cell-load.measured.v1<br/>(new offsets)"]
     CP["dc-a.checkpoints.internal"]
     G2["__consumer_offsets<br/>translated offsets"]
     HB["heartbeats"]
@@ -252,7 +252,7 @@ sequenceDiagram
   participant A as dc-a (primary)
   participant B as dc-b (DR, mirror)
   participant C as Consumers
-  P->>A: produce order-status
+  P->>A: produce call records
   A-->>B: link fetch (async, byte copy)
   A-->>B: offset sync every 30 s
   Note over A: DC A lost

@@ -1,5 +1,5 @@
 ---
-title: 08 — Hybrid linking and data contracts
+title: 01 — Hybrid linking and data contracts
 subtitle: Source-initiated Cluster Linking CP→CC, Schema Linking with contexts, broker-side schema ID validation. Built from current docs on 2026-11-07 (no course exists). Data contracts in notes-data-contracts.md.
 ---
 
@@ -99,7 +99,7 @@ sequenceDiagram
   Ops->>CP: kafka-cluster-links --create --link from-dc-a --cluster-id LKC_ID<br/>link.mode=SOURCE, connection.mode=OUTBOUND, CC API key
   CP->>CC: open TCP/TLS, SASL PLAIN (outbound)
   CC-->>CP: link established (reverse connection)
-  Ops->>CC: confluent kafka mirror create orders.order-status.updated.v1 --link from-dc-a
+  Ops->>CC: confluent kafka mirror create billing.call-record.created.v1 --link from-dc-a
   loop continuously
     CC->>CP: Fetch (over CP-opened connection)
     CP-->>CC: record batches (bytes as stored)
@@ -146,7 +146,7 @@ bytes. ID 17 in the on-prem registry means nothing to the CC registry — or wor
 - A **context** is a separate namespace inside one registry: its own subjects **and its own ID
   space**. ID 17 in `.onprem` and ID 17 in the default context can be different schemas.
 - Default context = `.`; named contexts start with a dot: `.onprem`, `.onprem.ops`.
-- Qualified subject: `:.onprem:orders.order-status.updated.v1-value`. Unqualified = default.
+- Qualified subject: `:.onprem:billing.call-record.created.v1-value`. Unqualified = default.
 - Clients pick a context with a **base path** in the URL: `https://<sr>/contexts/.onprem`
   (or a `context.name.strategy` class for per-topic choice). Lookups by ID can also pass
   `?subject=:.onprem:<subject>`.
@@ -199,7 +199,7 @@ to cloud-native tooling. Options:
 flowchart LR
   subgraph ONP["On-prem"]
     SRA["CP Schema Registry<br/>default context: WRITE master<br/>for on-prem subjects"]
-    EXP["exporter 'to-cc'<br/>subjects: orders.*, tracking.*<br/>context-type: DEFAULT"]
+    EXP["exporter 'to-cc'<br/>subjects: billing.*, noc.*<br/>context-type: DEFAULT"]
     SRA --> EXP
   end
   subgraph CCL["CC env 'onprem-landing' (option 1)"]

@@ -1,5 +1,5 @@
 ---
-title: 06 — Production streaming systems
+title: 07 — Production streaming systems
 subtitle: From PoC to a shared, mission-critical platform — operating model, GitOps for platform and app changes, multi-tenancy, quotas, observability, chargeback, capacity. Checked against docs on 2026-11-07.
 ---
 
@@ -101,8 +101,8 @@ Source: https://developer.confluent.io/courses/data-streaming-systems/production
 - Non-Java clients (librdkafka) have different defaults (auto-commit, partitioner hashing). Check
   them; a different partitioner breaks key ordering across mixed-language producers.
 - Test failure, not only the happy path: broker restart, rebalance, network partition, multi-node.
-- Data quality rules and migration rules in the schema (see module 03).
-- Broker-side schema validation only checks the schema ID (module 03).
+- Data quality rules and migration rules in the schema (see module 04).
+- Broker-side schema validation only checks the schema ID (module 04).
 - App metrics: consumer lag + commit rate; producer request rate, error rate, latency.
 - Kafka Streams: `num.standby.replicas ≥ 1`, explicit names for processors and state stores.
 
@@ -113,7 +113,7 @@ Source: https://developer.confluent.io/courses/data-streaming-systems/production
 | Role | Owns | Does not own |
 |---|---|---|
 | **Platform team** (central technology platforms) | Clusters, CFK/Terraform base, golden modules, CI gates, quotas, observability, upgrades, DR tests, tag taxonomy | Topic contents, schemas of domains, consumer code |
-| **Domain team** (orders, tracking, customers…) | Its data products: topic config within module limits, schema, contract metadata, access approvals | Cluster config, quotas above its tier |
+| **Domain team** (billing, NOC, customer care…) | Its data products: topic config within module limits, schema, contract metadata, access approvals | Cluster config, quotas above its tier |
 | **Consumer team** (data & analytics teams, AI apps) | Its consumers, consumer groups, lag SLOs, Databricks jobs | Producer schemas |
 | **Governance guild** | Classification scheme, naming standard, "what may leave the DC" policy | Day-to-day approvals |
 | **Run partner** (outsourced operations, if any) | 24/7 operations against runbooks; executes upgrades | Design decisions, policy |
@@ -175,8 +175,8 @@ Kafka facts that shape the choice:
 | Disk / request handler idle | OS + `RequestHandlerAvgIdlePercent` | disk > 70%, idle < 30% | Capacity |
 | Schema Registry errors | SR JMX / client deserialisation errors, DLQ volume | rising | Contract breaks |
 
-Lag in **time**, not offsets: 10,000 messages behind is fine for a firehose and fatal for order
-status. Express consumer SLOs per data product as "seconds behind head".
+Lag in **time**, not offsets: 10,000 messages behind is fine for a firehose and fatal for prepaid
+balances. Express consumer SLOs per data product as "seconds behind head".
 
 Many shops already run **Datadog** or **Splunk** for monitoring. Datadog has Confluent Platform
 (JMX) and Confluent Cloud (Metrics API) integrations. The CC Metrics API also has a Prometheus
@@ -203,7 +203,7 @@ Worked example (a small operations cluster; assumed inputs [A]):
 |---|---|
 | Peak ingress | 2 MB/s (≈ 1,000 msg/s × 2 KB) |
 | Replication | RF 3 in DC-A + observers 2 in DC-B (MRC) → 5 copies |
-| Retention local | 7 days (MRC does not support tiered storage — module 07) |
+| Retention local | 7 days (MRC does not support tiered storage — module 08) |
 | Consumers | average fan-out 6 (apps + link) |
 
 | Quantity | Formula | Result |
@@ -271,10 +271,10 @@ flowchart TB
     L1["listener INTERNAL<br/>apps"]
     L2["listener REPLICATION<br/>cluster link principal"]
     L3["listener ADMIN<br/>platform"]
-    Q1["quota: tracking-svc<br/>produce 5 MB/s"]
+    Q1["quota: noc-svc<br/>produce 5 MB/s"]
     Q2["quota: link-to-cc<br/>fetch 10 MB/s"]
   end
-  Apps["Tracking / order apps"] --> L1 --> Q1
+  Apps["NOC / billing apps"] --> L1 --> Q1
   Link["Cluster link to CC<br/>(source-initiated, outbound)"] --> L2 --> Q2
   Ops["Platform team / CFK"] --> L3
   Link --> CCm["CC mirror topics"]
@@ -337,7 +337,7 @@ Questions an architect asks the team that owns the platform:
    parallel teams. Cluster and network in a platform state that domains read via outputs. API keys
    for apply are per pipeline, scoped to the domain's prefix with RBAC.
 
-4. **"How do you protect operational item tracking from a data scientist's backfill?"**
+4. **"How do you protect operational NOC alarm handling from a data scientist's backfill?"**
    They never connect to the on-prem cluster. They read the CC mirror, which is sized for replay.
    On-prem serves one link fetch per topic, capped by a quota on the link principal.
 

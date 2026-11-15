@@ -59,10 +59,10 @@ resource "confluent_api_key" "sa_crash_admin_kafka_dedicated" {
 # Enterprise + Azure PrivateLink Attachment: `cc-ent`
 # NOTE (review 2026-11-07): since 2026-05-04 Enterprise Private Link uses the ingress
 # PrivateLink Gateway + Access Points (`confluent_gateway`, `confluent_access_point`); the
-# PrivateLink Attachment below is the older model [V]. Module 02's lab builds its own gateway
-# and Enterprise cluster, so keep `enable_paid_enterprise_private = false` and use lab 02.
+# PrivateLink Attachment below is the older model [V]. Module 03's lab builds its own gateway
+# and Enterprise cluster, so keep `enable_paid_enterprise_private = false` and use lab 03.
 # This creates only the Confluent side. The Azure private endpoint, the private DNS zone
-# and the PrivateLink Attachment *connection* belong to module 02 (cloud networking),
+# and the PrivateLink Attachment *connection* belong to module 03 (cloud networking),
 # which needs the azurerm provider and an Azure subscription.
 # Enterprise can be a Cluster Linking destination and source (private networking rules apply).
 # ---------------------------------------------------------------------------

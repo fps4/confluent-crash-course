@@ -1,5 +1,5 @@
 ---
-title: 05 — Confluent Cloud security
+title: 06 — Confluent Cloud security
 subtitle: API keys vs OAuth with Entra ID (client credentials, group overage), RBAC and prefixes, ACLs, audit logs, BYOK, client quotas. CP-side (mTLS, OAUTHBEARER, MDS RBAC) is in notes-cp-security.md. Checked against docs on 2026-11-07.
 ---
 
@@ -66,7 +66,7 @@ Role bindings      = to User:pool-xxxx
 
 Sources: CC identity providers doc, CP Entra doc (Microsoft behaviour is the same for both).
 
-**Setup shape:** one app registration represents "Kafka" (the resource/API, e.g. `api://kafka-prod`), with **app roles** like `Kafka.Sites.Read`. Each workload is its own app registration (or managed identity) that requests a token for `api://kafka-prod/.default` with the **client-credentials** grant.
+**Setup shape:** one app registration represents "Kafka" (the resource/API, e.g. `api://kafka-prod`), with **app roles** like `Kafka.Cells.Read`. Each workload is its own app registration (or managed identity) that requests a token for `api://kafka-prod/.default` with the **client-credentials** grant.
 
 | Pitfall | What happens | Fix |
 |---|---|---|
@@ -81,10 +81,10 @@ Sources: CC identity providers doc, CP Entra doc (Microsoft behaviour is the sam
 Recommended pool filter for a workload pool:
 
 ```text
-claims.aud == "5f1c…-api-app-client-id" && "Kafka.Sites.Read" in claims.roles
+claims.aud == "5f1c…-api-app-client-id" && "Kafka.Cells.Read" in claims.roles
 ```
 
-One pool per access pattern (read sites, write orders …), one app role per pool. That keeps filters short (300-char limit), mutually exclusive (quotas), and auditable.
+One pool per access pattern (read cells, write billing …), one app role per pool. That keeps filters short (300-char limit), mutually exclusive (quotas), and auditable.
 
 For **people**: SSO with Entra, then **group mappings** (Entra group → RBAC). The overage problem exists here too (SAML: 150 groups) — use groups assigned to the Confluent enterprise app.
 
@@ -99,11 +99,11 @@ Source: https://developer.confluent.io/courses/cloud-security/rbac-and-acls/ + p
 | Operator, MetricsViewer | org/env/cluster | ops and monitoring tools (Datadog reads metrics with MetricsViewer) |
 | DataSteward, DataDiscovery | env / org-env | governance team, catalogue browsing |
 | FlinkAdmin / FlinkDeveloper | env / compute pool | stream processing teams |
-| **ResourceOwner** | topic, group, subject, … (prefix allowed for many types) | a **domain team owns its prefix** (`orders.`) |
+| **ResourceOwner** | topic, group, subject, … (prefix allowed for many types) | a **domain team owns its prefix** (`billing.`) |
 | **DeveloperRead / DeveloperWrite / DeveloperManage** | topic, consumer group, subject, transactional id, KEK — **prefix allowed** | application access |
 | Assigner | a service account | lets a pool/CI act as an SA |
 
-- Prefix binding in CLI: `--resource Topic:orders. --prefix`; in Terraform: `crn_pattern = "<cluster rbac_crn>/kafka=<lkc>/topic=orders.*"`.
+- Prefix binding in CLI: `--resource Topic:billing. --prefix`; in Terraform: `crn_pattern = "<cluster rbac_crn>/kafka=<lkc>/topic=billing.*"`.
 - A consumer needs **DeveloperRead on the topic and on its consumer group** (and on the subject in Schema Registry). Forgetting the group is the most common onboarding ticket.
 - **Basic clusters: no RBAC on Kafka resources** (topics, groups). Use ACLs there, or use Standard+.
 
@@ -130,7 +130,7 @@ Source: https://developer.confluent.io/courses/cloud-security/encryption/ + BYOK
 - **BYOK (self-managed keys)** on Azure: **Dedicated** and **Enterprise** **[V]**; not Freight. Chosen **at cluster creation**, cannot be added later.
 - Azure Key Vault requirements: **RSA or RSA-HSM** key, **purge protection on**, Azure RBAC on the vault; Confluent gives a CLI snippet that grants its app **Key Vault Crypto Service Encryption User** + **Key Vault Reader**. Dedicated with vault firewall: allow trusted Microsoft services. **Enterprise: vault must allow public access from all networks** — a point your security team will notice.
 - Revoking or deleting the key makes the cluster unusable. Never delete old key versions. After cluster deletion the key is released after a 5-day cool-down.
-- BYOK protects storage; operators and authorised clients still see plaintext. For field-level protection see module 04 (CSFLE).
+- BYOK protects storage; operators and authorised clients still see plaintext. For field-level protection see module 05 (CSFLE).
 
 ### 2.9 Client quotas
 
@@ -145,7 +145,7 @@ Source: client quotas doc.
 | Semantics | each listed principal gets the full value (not shared); enforced at cluster level; a ceiling, not a guarantee; shows up as **throttle latency** on the client |
 | Pools | works only when exactly **one** pool matches the client |
 
-### 2.10 Network controls (link to module 02)
+### 2.10 Network controls (link to module 03)
 
 Private networking (Private Link) and **IP filtering** (IP groups + operation groups, public traffic only). mTLS on CC: Dedicated clusters on Azure; Enterprise/Freight on AWS **[V]**; uses a private CA uploaded as a certificate authority plus certificate identity pools. Public CAs are removing the `clientAuth` EKU in 2026 — plan a private CA for any mTLS, on-prem too.
 
@@ -164,17 +164,17 @@ sequenceDiagram
   participant P as Identity pools<br/>+ RBAC
   W->>E: POST /oauth2/v2.0/token<br/>grant_type=client_credentials<br/>scope=api://kafka-prod/.default
   Note over E: resource app has requestedAccessTokenVersion=2<br/>app role assigned DIRECTLY to workload SP
-  E-->>W: JWT iss=.../v2.0, aud=<api guid>,<br/>sub=<sp oid>, roles=["Kafka.Sites.Read"]
+  E-->>W: JWT iss=.../v2.0, aud=<api guid>,<br/>sub=<sp oid>, roles=["Kafka.Cells.Read"]
   W->>B: SASL/OAUTHBEARER (token)<br/>extension logicalCluster=lkc-...
   B->>B: verify signature with Entra JWKS,<br/>iss, exp
   B->>P: which pools match? (CEL filters)
-  P-->>B: pool-sites-read (exactly one)
-  W->>B: Fetch sites.queue-length.measured.v1, group analytics-...
-  B->>P: DeveloperRead on Topic:sites.* and Group:analytics-* for User:pool-...?
+  P-->>B: pool-cells-read (exactly one)
+  W->>B: Fetch network.cell-load.measured.v1, group analytics-...
+  B->>P: DeveloperRead on Topic:network.* and Group:analytics-* for User:pool-...?
   P-->>B: allowed
   B-->>W: records
   Note over B: audit log: authN (pool, sub), authZ granted
-  W->>B: Produce orders.order-status.updated.v1
+  W->>B: Produce billing.call-record.created.v1
   B-->>W: TOPIC_AUTHORIZATION_FAILED (audit: denied)
 ```
 
@@ -183,21 +183,21 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   subgraph Entra["Entra ID"]
-    API["App reg: kafka-prod (API)<br/>app roles: Kafka.Sites.Read,<br/>Kafka.Orders.Write"]
+    API["App reg: kafka-prod (API)<br/>app roles: Kafka.Cells.Read,<br/>Kafka.Billing.Write"]
     DBX["App/MI: analytics-databricks"]
-    AI["App/MI: ai-queue-forecaster"]
-    FO["App/MI: orders-publisher"]
+    AI["App/MI: ai-load-forecaster"]
+    FO["App/MI: billing-publisher"]
     G["Group: kafka-platform-admins"]
   end
   subgraph CC["Confluent Cloud org"]
     IP["Identity provider (Entra v2)"]
-    P1["pool-sites-read<br/>roles contains Kafka.Sites.Read"]
-    P2["pool-orders-write<br/>roles contains Kafka.Orders.Write"]
+    P1["pool-cells-read<br/>roles contains Kafka.Cells.Read"]
+    P2["pool-billing-write<br/>roles contains Kafka.Billing.Write"]
     GM["Group mapping<br/>kafka-platform-admins"]
     SA["sa-cluster-link<br/>(API key, link only)"]
     subgraph RB["Role bindings"]
-      R1["DeveloperRead Topic:sites.* , Group:analytics-* , Subject:sites.*"]
-      R2["DeveloperWrite Topic:orders.* , DeveloperRead Subject:orders.*"]
+      R1["DeveloperRead Topic:network.* , Group:analytics-* , Subject:network.*"]
+      R2["DeveloperWrite Topic:billing.* , DeveloperRead Subject:billing.*"]
       R3["EnvironmentAdmin env-prod"]
       R4["Cluster Link SA: rights on link and<br/>mirror topics only [V]"]
     end
@@ -227,7 +227,7 @@ flowchart LR
 | RBAC roles list | New roles: **NetworkAdmin**, **FlinkAdmin/FlinkDeveloper/FlinkFunctionDeveloper**, **DataSteward/DataDiscovery**, USM roles for registered CP clusters, ParentAdmin | predefined roles doc |
 | Kafka client config | Kafka **4.x** Java clients need the **allowed URLs** system property for OAuth endpoints | Kafka 4.0 notes, CVE-2025-27817 |
 | Schema Registry auth = API key | SR also accepts OAuth (own token or inherited from Kafka login) | Java client OAuth doc |
-| (Not covered) KEK resources | RBAC on **KEKs** for CSFLE | module 04 |
+| (Not covered) KEK resources | RBAC on **KEKs** for CSFLE | module 05 |
 
 ---
 
@@ -236,7 +236,7 @@ flowchart LR
 This section assumes an organisation that runs mission-critical Confluent Platform on-prem in two data centres and serves cloud (Azure) data and AI consumers from a Confluent Cloud landing cluster.
 
 - **Entra ID is the identity source** for both people and workloads. People: SSO + group mappings for the platform team and a small set of read-only roles. Workloads: OAuth identity pools mapped to **app roles**, assigned **directly** to each workload's service principal or managed identity. API keys only for Terraform (Cloud API key in a vault), the Cluster Link credential, and anything on a Basic cluster.
-- **One app role per access pattern, one pool per role.** Name roles after data products: `Kafka.Sites.Read`, `Kafka.Orders.Write`. The data-product owner approves the role assignment in Entra (that is the access request), the platform's Terraform owns the pool and the role bindings. A self-service data portal can raise these requests.
+- **One app role per access pattern, one pool per role.** Name roles after data products: `Kafka.Cells.Read`, `Kafka.Billing.Write`. The data-product owner approves the role assignment in Entra (that is the access request), the platform's Terraform owns the pool and the role bindings. A self-service data portal can raise these requests.
 - **RBAC by domain prefix**, matching a naming rule like `<domain>.<dataproduct>.<event>.<version>`: domain teams get `ResourceOwner` on their prefix in non-prod, `DeveloperWrite` in prod (topics are created only by the platform pipeline); consumers get `DeveloperRead` on topic prefix + their group prefix (`analytics-`, `ai-`) + subject prefix.
 - **Quotas** on the Enterprise landing cluster: a default quota for every principal, larger named quotas for known replay-heavy consumers (analytics backfills). On-prem, the important quota is on the **Cluster Link principal** (see `notes-cp-security.md`). Remember: CC quotas are bytes only; request-rate protection is on-prem only.
 - **Audit**: replicate `confluent-audit-log-events` to the SIEM (Splunk, Sentinel) — 7 days is not enough for NIS2 incident investigation. Alert on denied authorizations against PII topics and on role-binding changes.

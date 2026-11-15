@@ -35,7 +35,7 @@ variable "enable_paid_dedicated" {
 }
 
 variable "enable_paid_enterprise_private" {
-  description = "Create Enterprise cluster `cc-ent` + Azure PrivateLink Attachment. Enterprise is always privately networked: you need an Azure private endpoint and a client inside that VNet (module 02 owns the Azure side)."
+  description = "Create Enterprise cluster `cc-ent` + Azure PrivateLink Attachment. Enterprise is always privately networked: you need an Azure private endpoint and a client inside that VNet (module 03 owns the Azure side)."
   type        = bool
   default     = false
 }
