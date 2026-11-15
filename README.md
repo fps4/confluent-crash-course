@@ -1,13 +1,13 @@
 ---
-title: Confluent crash course
-subtitle: Advanced hands-on course on Confluent Platform and Confluent Cloud for hybrid and multicloud designs — Cluster Linking, Azure private networking, governance, security. Built 2026-11-07.
+title: Confluent Kafka crash course
+subtitle: Advanced hands-on Apache Kafka course on Confluent Platform and Confluent Cloud for hybrid and multicloud designs — Cluster Linking, Azure private networking, governance, security. Built 2026-11-07.
 ---
 
-# Confluent crash course
+# Confluent Kafka crash course
 
-An advanced, hands-on course for **experienced integration, platform and data engineers and
-architects**: people who already run Kafka or similar messaging in production and now have to
-design Confluent across a **hybrid and multicloud** estate. Confluent Platform in your own data
+An advanced, hands-on **Apache Kafka** course for **experienced integration, platform and data
+engineers and architects**: people who already run Kafka or similar messaging in production and now
+have to design Kafka with Confluent across a **hybrid and multicloud** estate. Confluent Platform in your own data
 centres, Confluent Cloud on Azure, and the links, networks, schemas and security between them.
 Topics, partitions, consumer groups and offsets are assumed knowledge; the course starts where
 they stop.
@@ -79,8 +79,8 @@ Quick start:
 
 ```bash
 mkdir -p ~/labs && cd ~/labs
-git clone https://github.com/fps4/confluent-crash-course.git
-cd confluent-crash-course/00-lab-setup
+git clone https://github.com/fps4/confluent-kafka-crash-course.git
+cd confluent-kafka-crash-course/00-lab-setup
 docker compose up -d        # dc-a, sr-a, dc-b, sr-b
 ```
 

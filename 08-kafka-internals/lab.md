@@ -42,7 +42,7 @@ then stops one controller, and then a second, on purpose.
   three-broker cluster, so it starts a **30-day trial** for this cluster only (it does not touch
   `dc-a`/`dc-b`). Fine for a lab; `down -v` and start again if it expires.
 - The lab helpers loaded in this terminal
-  (`source ~/labs/confluent-crash-course/00-lab-setup/lab-env.sh`): the commands below use
+  (`source ~/labs/confluent-kafka-crash-course/00-lab-setup/lab-env.sh`): the commands below use
   `$LAB/..` (the course folder), so they work from any directory.
 - Start clean if you ran this lab before, because the topics below would already exist:
   `( cd "$LAB/../08-kafka-internals" && docker compose -f docker-compose.3broker.yml down -v )`
